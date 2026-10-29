@@ -1,0 +1,50 @@
+<Window x:Class="RevisionsEditor.App.CommitDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Commit Changes"
+        Width="480"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource ApplicationBackgroundBrush}"
+        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+        FocusManager.FocusedElement="{Binding ElementName=MessageTextBox}">
+    <Grid Margin="20,16,20,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="ContextText" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+
+        <Label Grid.Row="1" Content="Commit _message:" Target="{Binding ElementName=MessageTextBox}" Padding="0,0,0,4"/>
+        <TextBox x:Name="MessageTextBox" Grid.Row="2"
+                 TextWrapping="Wrap"
+                 AcceptsReturn="True"
+                 MinLines="3"
+                 MaxLines="8"
+                 VerticalScrollBarVisibility="Auto"
+                 TextChanged="OnMessageTextChanged"/>
+
+        <StackPanel x:Name="CommentsPanel" Grid.Row="3" Margin="0,12,0,0" Visibility="Collapsed">
+            <TextBlock Text="This commit addresses these reviewer comments:" Margin="0,0,0,4"/>
+            <ListBox x:Name="CommentsList" MaxHeight="180" BorderThickness="0" Background="Transparent">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}" Content="{Binding Label}" ToolTip="{Binding Label}"/>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </StackPanel>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button x:Name="CommitButton" Content="_Commit" IsDefault="True" MinWidth="96" Click="OnCommitClick"/>
+            <Button Content="Cancel" IsCancel="True" MinWidth="96" Margin="8,0,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

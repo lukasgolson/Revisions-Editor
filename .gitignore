@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+TestResults/
+*.user
+
+# IDEs
+.idea/
+.vs/
+
+# Tectonic, downloaded by the build into tools/tectonic/<version>
+tools/
+
+# Machine-specific package source (points at a local NuGet cache)
+NuGet.config

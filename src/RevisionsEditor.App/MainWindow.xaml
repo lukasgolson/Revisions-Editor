@@ -1,0 +1,1388 @@
+<Window x:Class="RevisionsEditor.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:RevisionsEditor.App"
+        xmlns:ad="https://github.com/Dirkster99/AvalonDock"
+        xmlns:models="clr-namespace:RevisionsEditor.Core.Models;assembly=RevisionsEditor.Core"
+        Title="{Binding WindowTitle}"
+        Width="1440" Height="900"
+        MinWidth="1000" MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource ApplicationBackgroundBrush}"
+        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+        UseLayoutRounding="True">
+
+    <Window.Resources>
+        <app:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
+        <app:EqualsConverter x:Key="EqualsConverter"/>
+        <app:NotNullConverter x:Key="NotNull"/>
+
+        <Style x:Key="CellText" TargetType="TextBlock">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="8,0"/>
+            <!-- Full text on hover, since cells are truncated with an ellipsis -->
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+            <Setter Property="ToolTipService.InitialShowDelay" Value="700"/>
+        </Style>
+        <Style x:Key="MonoCellText" TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+            <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+        </Style>
+
+        <ContextMenu x:Key="HunkContextMenu">
+            <MenuItem Command="app:AppCommands.AcceptChange">
+                <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8FB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Command="app:AppCommands.RejectChange">
+                <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE711;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Command="app:AppCommands.ResetChange"/>
+        </ContextMenu>
+
+        <ContextMenu x:Key="CommitContextMenu">
+            <MenuItem Command="app:AppCommands.CheckoutCommit"/>
+            <MenuItem Command="app:AppCommands.CompareWithHead"/>
+        </ContextMenu>
+
+        <ContextMenu x:Key="PatchContextMenu">
+            <MenuItem Command="app:AppCommands.CopyPatchText">
+                <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8C8;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Command="app:AppCommands.MarkPatchApplied"/>
+        </ContextMenu>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Menu bar -->
+        <Menu Grid.Row="0">
+            <MenuItem Header="_File">
+                <MenuItem Command="app:AppCommands.OpenWorkspace" Header="_Open Workspace...">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE838;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem x:Name="RecentWorkspacesMenu" Header="Recent _Workspaces" SubmenuOpened="OnRecentWorkspacesSubmenuOpened">
+                    <MenuItem Header="(none)" IsEnabled="False"/>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.CloneFromGitHub" Header="Open from _GitHub..."/>
+                <MenuItem Command="app:AppCommands.CloseWorkspace" Header="_Close Workspace"/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.ImportDocx" Header="_Import Word Document...">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8B5;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.ExportCleanDocx" Header="_Export Word Document...">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xEDE1;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.ExportTrackedDocx" Header="Export with _Tracked Changes..."/>
+                <MenuItem Command="app:AppCommands.ExportPdf" Header="Export _PDF with LaTeX..."/>
+                <MenuItem Command="app:AppCommands.ExportLatexSource" Header="Export _LaTeX Source..."/>
+                <MenuItem Command="app:AppCommands.ExportCertificate" Header="Export Provenance _Certificate..."/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.Exit" Header="E_xit" InputGestureText="Alt+F4"/>
+            </MenuItem>
+
+            <MenuItem Header="_Edit">
+                <MenuItem Command="ApplicationCommands.Undo"/>
+                <MenuItem Command="ApplicationCommands.Redo"/>
+                <Separator/>
+                <MenuItem Command="ApplicationCommands.Cut"/>
+                <MenuItem Command="ApplicationCommands.Copy"/>
+                <MenuItem Command="ApplicationCommands.Paste"/>
+                <MenuItem Command="ApplicationCommands.SelectAll"/>
+                <Separator/>
+                <MenuItem Command="ApplicationCommands.Find" Header="_Find..."/>
+                <MenuItem Command="ApplicationCommands.Replace" Header="_Replace..."/>
+                <MenuItem Command="app:AppCommands.FindNext" Header="Find _Next"/>
+                <MenuItem Command="app:AppCommands.FindPrevious" Header="Find Pre_vious"/>
+                <Separator/>
+                <MenuItem Header="Insert _Markup">
+                    <MenuItem Header="_Insertion  {++ ++}" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="insertion"/>
+                    <MenuItem Header="_Deletion  {-- --}" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="deletion"/>
+                    <MenuItem Header="_Substitution  {~~ ~&gt; ~~}" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="substitution"/>
+                    <MenuItem Header="_Comment  {== ==}{&gt;&gt; &lt;&lt;}" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="comment"/>
+                </MenuItem>
+            </MenuItem>
+
+            <!-- The views and tool panels, ticked while open: a click opens or closes one (filled in by code) -->
+            <MenuItem x:Name="ViewsMenu" Header="Vie_ws" IsEnabled="{Binding HasWorkspace}"/>
+
+            <MenuItem Header="_View">
+                <MenuItem Header="_All Markup" Command="app:AppCommands.SetMarkupMode" CommandParameter="{x:Static models:MarkupDisplayMode.AllMarkup}"
+                          IsChecked="{Binding SelectedMarkupMode, Mode=OneWay, Converter={StaticResource EqualsConverter}, ConverterParameter={x:Static models:MarkupDisplayMode.AllMarkup}}"/>
+                <MenuItem Header="_Simple Markup" Command="app:AppCommands.SetMarkupMode" CommandParameter="{x:Static models:MarkupDisplayMode.SimpleMarkup}"
+                          IsChecked="{Binding SelectedMarkupMode, Mode=OneWay, Converter={StaticResource EqualsConverter}, ConverterParameter={x:Static models:MarkupDisplayMode.SimpleMarkup}}"/>
+                <MenuItem Header="_No Markup" Command="app:AppCommands.SetMarkupMode" CommandParameter="{x:Static models:MarkupDisplayMode.NoMarkupFinal}"
+                          IsChecked="{Binding SelectedMarkupMode, Mode=OneWay, Converter={StaticResource EqualsConverter}, ConverterParameter={x:Static models:MarkupDisplayMode.NoMarkupFinal}}"/>
+                <MenuItem Header="_Original" Command="app:AppCommands.SetMarkupMode" CommandParameter="{x:Static models:MarkupDisplayMode.Original}"
+                          IsChecked="{Binding SelectedMarkupMode, Mode=OneWay, Converter={StaticResource EqualsConverter}, ConverterParameter={x:Static models:MarkupDisplayMode.Original}}"/>
+                <Separator/>
+                <MenuItem x:Name="LineNumbersMenuItem" Command="app:AppCommands.ToggleLineNumbers" Header="_Line Numbers"/>
+                <MenuItem Command="app:AppCommands.GoToLine" Header="_Go to Line..."/>
+                <MenuItem Command="app:AppCommands.WordCount" Header="_Word Count..."/>
+                <MenuItem Command="app:AppCommands.TogglePreview" Header="_Preview as Published"/>
+            </MenuItem>
+
+            <MenuItem Header="_Insert">
+                <MenuItem Command="app:AppCommands.InsertCitation" Header="_Citation..."/>
+                <MenuItem Command="app:AppCommands.InsertCrossReference" Header="C_ross-Reference..."/>
+                <MenuItem Command="app:AppCommands.InsertNumber" Header="Linked _Number..."/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.InsertFigure" Header="_Figure..."/>
+                <MenuItem Command="app:AppCommands.InsertTable" Header="_Table..."/>
+                <MenuItem Command="app:AppCommands.InsertEquation" Header="_Equation..."/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.InsertPlaceholder" Header="_Placeholder..."/>
+                <MenuItem Command="app:AppCommands.NewNote" Header="N_ote..."/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.AddRequiredSections" Header="_Required Sections..."/>
+            </MenuItem>
+
+            <MenuItem Header="_Paper">
+                <MenuItem Command="app:AppCommands.CheckManuscript" Header="_Check Manuscript"/>
+                <MenuItem Command="app:AppCommands.WordCount" Header="_Word Count..."/>
+                <MenuItem Command="app:AppCommands.TogglePreview" Header="_Preview as Published" IsCheckable="False"/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.AddReferencesByDoi" Header="Add References by _DOI..."/>
+                <MenuItem Command="app:AppCommands.AddReferencesFromZotero" Header="Add Cited References from _Zotero"/>
+                <MenuItem Command="app:AppCommands.CheckReferencesOnline" Header="Check DOIs and _Retractions Online"/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.AddResultsFile" Header="Add Results _File..."/>
+                <MenuItem Command="app:AppCommands.RefreshResults" Header="Refresh Res_ults"/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.ExportReviewCopy" Header="Export Review Cop_y..."/>
+                <MenuItem Command="app:AppCommands.ExportSubmissionCopy" Header="Export _Submission Copy..."/>
+                <MenuItem Command="app:AppCommands.ExportHighlights" Header="Export _Highlights File..."/>
+                <MenuItem Command="app:AppCommands.ExportPdf" Header="Export P_DF with LaTeX..."/>
+                <MenuItem Command="app:AppCommands.ExportLatexSource" Header="Export LaTe_X Source..."/>
+                <MenuItem Command="app:AppCommands.MarkSubmitted" Header="_Mark Current Version as Submitted"/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.AddReviewComments" Header="Add Reviewer C_omments..."/>
+                <MenuItem Command="app:AppCommands.ExportRevision" Header="Export Re_vision (Response Letter and Marked-Up Manuscript)..."/>
+            </MenuItem>
+
+            <MenuItem Header="_Repository">
+                <MenuItem Command="app:AppCommands.Commit" Header="_Commit...">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE74E;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.MergeIntoMain" Header="_Merge Review Branch into Main">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xEA3C;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.SyncWithGitHub" Header="S_ync with GitHub">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE895;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.ConnectGitHub" Header="Connect to _GitHub Repository..."/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.CheckoutCommit" Header="Check Out _Selected Commit"/>
+                <MenuItem Command="app:AppCommands.CompareWithHead" Header="Co_mpare Selected Commit with Latest"/>
+            </MenuItem>
+
+            <MenuItem Header="Re_view">
+                <MenuItem Command="app:AppCommands.AcceptChange" Header="_Accept Change">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8FB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.RejectChange" Header="_Reject Change">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xE711;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.ResetChange" Header="Mark as _Pending"/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.AcceptAllChanges" Header="Accept A_ll Changes"/>
+                <MenuItem Command="app:AppCommands.RejectAllChanges" Header="Reject All C_hanges"/>
+            </MenuItem>
+
+            <MenuItem Header="_Provenance">
+                <MenuItem Command="app:AppCommands.VerifyChain" Header="_Verify Provenance Chain">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource IconGlyph}" Text="&#xEA18;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Command="app:AppCommands.TestTamperDetection" Header="_Test Tamper Detection..."/>
+                <Separator/>
+                <MenuItem Command="app:AppCommands.ApplyFormatting" Header="_Apply Formatting Rules"/>
+            </MenuItem>
+
+            <MenuItem Header="_Help">
+                <MenuItem Command="app:AppCommands.About" Header="_About Revisions Editor"/>
+            </MenuItem>
+        </Menu>
+
+        <!-- Toolbar -->
+        <ToolBarTray Grid.Row="1" IsLocked="True">
+            <ToolBar>
+                <Button Command="app:AppCommands.OpenWorkspace" ToolTip="Open Workspace (Ctrl+O)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE838;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Open"/>
+                    </StackPanel>
+                </Button>
+                <Separator/>
+                <Button Command="app:AppCommands.ImportDocx" ToolTip="Import Word Document (Ctrl+Shift+I)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8B5;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Import"/>
+                    </StackPanel>
+                </Button>
+                <Button Command="app:AppCommands.ExportCleanDocx" ToolTip="Export Word Document (Ctrl+E)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xEDE1;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Export"/>
+                    </StackPanel>
+                </Button>
+                <Separator/>
+                <Button Command="app:AppCommands.Commit" ToolTip="Commit (Ctrl+S)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE74E;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Commit"/>
+                    </StackPanel>
+                </Button>
+                <Button Command="app:AppCommands.MergeIntoMain" ToolTip="Merge Review Branch into Main (Ctrl+M)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xEA3C;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Merge"/>
+                    </StackPanel>
+                </Button>
+                <Button Command="app:AppCommands.SyncWithGitHub" ToolTip="Sync with GitHub (Ctrl+Shift+Y)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE895;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Sync"/>
+                    </StackPanel>
+                </Button>
+                <Separator/>
+                <Button Command="app:AppCommands.VerifyChain" ToolTip="Verify Provenance Chain (F5)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource IconGlyph}" Text="&#xEA18;"/>
+                        <TextBlock Style="{StaticResource ToolBarLabel}" Text="Verify"/>
+                    </StackPanel>
+                </Button>
+                <Separator/>
+                <Label Content="_Style:" Target="{Binding ElementName=ProfileCombo}" VerticalAlignment="Center" Padding="4,0,6,0"/>
+                <ComboBox x:Name="ProfileCombo"
+                          Width="300"
+                          ItemsSource="{Binding BuiltInProfiles}"
+                          SelectedValue="{Binding ActiveProfileName, Mode=TwoWay}"
+                          SelectedValuePath="ProfileName"
+                          DisplayMemberPath="ProfileName"
+                          IsEnabled="{Binding HasWorkspace}"
+                          VerticalAlignment="Center"/>
+            </ToolBar>
+        </ToolBarTray>
+
+        <!-- Workbench -->
+        <Grid Grid.Row="2" Margin="8,4,8,8">
+            <!-- Panels can be dragged out into their own windows, docked elsewhere or split side by side; the layout is remembered. -->
+            <Grid x:Name="Workbench" Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}}">
+                <ad:DockingManager x:Name="DockManager" AllowMixedOrientation="True">
+                    <ad:LayoutRoot>
+                        <ad:LayoutPanel Orientation="Horizontal">
+                            <ad:LayoutAnchorablePaneGroup Orientation="Vertical" DockWidth="320" DockMinWidth="200">
+                                <ad:LayoutAnchorablePane DockHeight="3*">
+                                    <ad:LayoutAnchorable x:Name="HistoryPanel" ContentId="history" Title="History" CanClose="False" CanHide="True">
+
+                        <DockPanel>
+                                                        <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Content="_Branch:" Target="{Binding ElementName=BranchSelectorCombo}" VerticalAlignment="Center" Padding="0,0,8,0"/>
+                                    <ComboBox x:Name="BranchSelectorCombo" Grid.Column="1"
+                                              ItemsSource="{Binding Branches}"
+                                              SelectedItem="{Binding CurrentBranch, Mode=OneWay}"/>
+                                    <Button Grid.Column="2" Content="Check Out" Margin="8,0,0,0" Command="app:AppCommands.CheckoutBranch"/>
+                                </Grid>
+                            </Border>
+                            <DataGrid ItemsSource="{Binding CommitGraph}"
+                                      SelectedItem="{Binding SelectedCommit, Mode=TwoWay}"
+                                      ContextMenu="{StaticResource CommitContextMenu}"
+                                      AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                      HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                      CanUserResizeRows="False" EnableRowVirtualization="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      MouseDoubleClick="OnCommitGridDoubleClick"
+                                      AutomationProperties.Name="Commit history">
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="" Width="36" SortMemberPath="IsCryptographicallyVerified" CanUserResize="False">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Style="{StaticResource IconGlyph}" FontSize="14" Text="&#xE73E;"
+                                                           ToolTip="Signed and verified in the provenance chain"
+                                                           Foreground="{DynamicResource SystemFillColorSuccessBrush}"
+                                                           Visibility="{Binding IsCryptographicallyVerified, Converter={StaticResource BoolToVisibility}}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Commit" Binding="{Binding ShortSha}" Width="Auto" ElementStyle="{StaticResource MonoCellText}"/>
+                                    <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*" MinWidth="100" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Author" Binding="{Binding Author}" Width="86" ElementStyle="{StaticResource CellText}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    
+                                    </ad:LayoutAnchorable>
+                                </ad:LayoutAnchorablePane>
+                                <ad:LayoutAnchorablePane DockHeight="*">
+                                    <ad:LayoutAnchorable x:Name="OutputPanel" ContentId="output" Title="Output" CanClose="False" CanHide="True">
+
+                        <DockPanel>
+                                                        <ListBox ItemsSource="{Binding ActivityLogs}"
+                                     FontFamily="{StaticResource MonoFont}"
+                                     FontSize="11.5"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling"
+                                     AutomationProperties.Name="Output">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" TextWrapping="Wrap"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    
+                                    </ad:LayoutAnchorable>
+                                </ad:LayoutAnchorablePane>
+                            </ad:LayoutAnchorablePaneGroup>
+                            <ad:LayoutDocumentPaneGroup>
+                                <ad:LayoutDocumentPane>
+                                    <ad:LayoutDocument x:Name="DocumentPanel" ContentId="document" Title="Document" CanClose="True">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                <DockPanel>
+                                    <!-- Formatting: only what the manuscript can store (paragraph styles, bold, italic) -->
+                                    <StackPanel Orientation="Horizontal">
+                                        <Label Content="St_yle:" Target="{Binding ElementName=ParagraphStyleCombo}" VerticalAlignment="Center" Padding="0,0,8,0"/>
+                                        <ComboBox x:Name="ParagraphStyleCombo" Width="150"
+                                                  ItemsSource="{Binding ParagraphStyles}"
+                                                  SelectedValuePath="Role"
+                                                  DisplayMemberPath="Label"
+                                                  SelectionChanged="OnParagraphStyleSelectionChanged"
+                                                  ToolTip="Paragraph style (Ctrl+Alt+1, 2, 3 for headings; Ctrl+Shift+N for Normal)"
+                                                  AutomationProperties.Name="Paragraph style"/>
+                                        <ToggleButton x:Name="BoldButton" Margin="8,0,0,0" Focusable="False"
+                                                      Command="EditingCommands.ToggleBold" CommandTarget="{Binding ElementName=ManuscriptEditor}"
+                                                      ToolTip="Bold (Ctrl+B)" AutomationProperties.Name="Bold">
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8DD;"/>
+                                        </ToggleButton>
+                                        <ToggleButton x:Name="ItalicButton" Margin="4,0,0,0" Focusable="False"
+                                                      Command="EditingCommands.ToggleItalic" CommandTarget="{Binding ElementName=ManuscriptEditor}"
+                                                      ToolTip="Italic (Ctrl+I)" AutomationProperties.Name="Italic">
+                                            <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE8DB;"/>
+                                        </ToggleButton>
+                                        <Border Width="1" Margin="10,4" Background="{DynamicResource DividerStrokeColorDefaultBrush}"/>
+                                        <Button Content="Cite" Command="app:AppCommands.InsertCitation" Focusable="False" ToolTip="Insert a citation (Ctrl+Alt+C)"/>
+                                        <Button Content="Ref" Command="app:AppCommands.InsertCrossReference" Focusable="False" Margin="4,0,0,0" ToolTip="Refer to a figure, table, equation or section (Ctrl+Alt+R)"/>
+                                        <Button Content="Number" Command="app:AppCommands.InsertNumber" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a number linked to the analysis results (Ctrl+Alt+N)"/>
+                                        <Button Content="Figure" Command="app:AppCommands.InsertFigure" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a figure (Ctrl+Alt+F)"/>
+                                        <Button Content="Table" Command="app:AppCommands.InsertTable" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a table from a CSV file (Ctrl+Alt+T)"/>
+                                        <Button Content="Equation" Command="app:AppCommands.InsertEquation" Focusable="False" Margin="4,0,0,0" ToolTip="Insert an equation (Ctrl+Alt+Q)"/>
+                                        <ToggleButton x:Name="PreviewToggle" Content="Preview" Focusable="False" Margin="10,0,0,0"
+                                                      Command="app:AppCommands.TogglePreview"
+                                                      ToolTip="Show the paper as published: citations, numbers and the reference list rendered (F8)"/>
+                                    </StackPanel>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                        <Label Content="Display for _review:" Target="{Binding ElementName=MarkupModeCombo}" VerticalAlignment="Center" Padding="16,0,8,0"/>
+                                        <ComboBox x:Name="MarkupModeCombo" Width="150"
+                                                  ItemsSource="{Binding MarkupModes}"
+                                                  SelectedValue="{Binding SelectedMarkupMode, Mode=TwoWay}"
+                                                  SelectedValuePath="Mode"
+                                                  DisplayMemberPath="Label"
+                                                  ToolTip="How paragraphs with pending changes are shown"/>
+                                    </StackPanel>
+                                    <!-- Brief, non-blocking notices about the editor (shown for a few seconds) -->
+                                    <TextBlock x:Name="EditorNotice" Style="{StaticResource SecondaryText}" Margin="16,0,0,0"
+                                               TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
+                                </DockPanel>
+                            </Border>
+                            <!-- The page sits on a neutral canvas, as in Word's Print Layout -->
+                            <Border Background="{DynamicResource SolidBackgroundFillColorTertiaryBrush}" Padding="24,16">
+                                <Border MaxWidth="840" Background="White" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                    <Grid>
+                                        <!-- Paper keeps dark ink and a dark caret in both app themes -->
+                                        <RichTextBox x:Name="ManuscriptEditor"
+                                                     Background="White"
+                                                     Foreground="#1F1F1F"
+                                                     CaretBrush="#1F1F1F"
+                                                     BorderThickness="0"
+                                                     Padding="0"
+                                                     AcceptsTab="False"
+                                                     IsDocumentEnabled="True"
+                                                     IsReadOnly="{Binding IsBusy}"
+                                                     SpellCheck.IsEnabled="True"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     TextChanged="OnEditorTextChanged"
+                                                     SelectionChanged="OnEditorSelectionChanged"
+                                                     PreviewKeyDown="OnEditorPreviewKeyDown"
+                                                     AutomationProperties.Name="Manuscript"/>
+                                        <FlowDocumentScrollViewer x:Name="PreviewViewer"
+                                                                  Background="White"
+                                                                  Foreground="#1F1F1F"
+                                                                  IsToolBarVisible="False"
+                                                                  VerticalScrollBarVisibility="Auto"
+                                                                  Visibility="Collapsed"
+                                                                  AutomationProperties.Name="Preview"/>
+                                        <TextBlock x:Name="EmptyEditorHint"
+                                                   Text="Start typing your manuscript, or import a draft with File &gt; Import Word Document."
+                                                   Foreground="#767676"
+                                                   TextWrapping="Wrap"
+                                                   IsHitTestVisible="False"
+                                                   Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+                            </Border>
+                        </DockPanel>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="SourcePanel" ContentId="source" Title="Source" CanClose="True">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource SecondaryText}" Text="Insert markup:" Margin="0,0,8,0"/>
+                                    <Button Content="Insertion" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="insertion" ToolTip="{}{++inserted text++}"/>
+                                    <Button Content="Deletion" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="deletion" Margin="6,0,0,0" ToolTip="{}{--deleted text--}"/>
+                                    <Button Content="Substitution" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="substitution" Margin="6,0,0,0" ToolTip="{}{~~original~>replacement~~}"/>
+                                    <Button Content="Comment" Command="app:AppCommands.InsertCriticMarkup" CommandParameter="comment" Margin="6,0,0,0" ToolTip="{}{==highlighted==}{>>Author: comment&lt;&lt;}"/>
+                                </StackPanel>
+                            </Border>
+                            <TextBox x:Name="MarkdownSourceTextBox"
+                                     Text="{Binding RawMarkdownText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     IsReadOnly="{Binding IsBusy}"
+                                     AcceptsReturn="True"
+                                     AcceptsTab="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     FontFamily="{StaticResource MonoFont}"
+                                     FontSize="13"
+                                     Padding="12,10"
+                                     BorderThickness="0"
+                                     SpellCheck.IsEnabled="False"
+                                     AutomationProperties.Name="Markdown source"/>
+                        </DockPanel>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="ComparePanel" ContentId="compare" Title="Compare" CanClose="True">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*" MinHeight="120"/>
+                                <RowDefinition Height="6"/>
+                                <RowDefinition Height="220" MinHeight="80"/>
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0" Style="{StaticResource CommandStrip}">
+                                <WrapPanel>
+                                    <Label Content="_Base:" Target="{Binding ElementName=CompareBaseCombo}" VerticalAlignment="Center" Padding="0,0,8,0"/>
+                                    <ComboBox x:Name="CompareBaseCombo" Width="260" ItemsSource="{Binding CommitGraph}" SelectedItem="{Binding CompareBaseCommit, Mode=TwoWay}" Margin="0,0,16,0">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock TextTrimming="CharacterEllipsis">
+                                                    <Run Text="{Binding ShortSha, Mode=OneWay}" FontFamily="{StaticResource MonoFont}"/>
+                                                    <Run Text="{Binding Message, Mode=OneWay}"/>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                    <Label Content="_Target:" Target="{Binding ElementName=CompareTargetCombo}" VerticalAlignment="Center" Padding="0,0,8,0"/>
+                                    <ComboBox x:Name="CompareTargetCombo" Width="260" ItemsSource="{Binding CommitGraph}" SelectedItem="{Binding CompareTargetCommit, Mode=TwoWay}" Margin="0,0,16,0">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock TextTrimming="CharacterEllipsis">
+                                                    <Run Text="{Binding ShortSha, Mode=OneWay}" FontFamily="{StaticResource MonoFont}"/>
+                                                    <Run Text="{Binding Message, Mode=OneWay}"/>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                    <TextBlock Style="{StaticResource SecondaryText}" Text="{Binding DiffSummary}"/>
+                                </WrapPanel>
+                            </Border>
+
+                            <FlowDocumentScrollViewer x:Name="UnifiedDiffViewer"
+                                                      Grid.Row="1"
+                                                      IsToolBarVisible="False"
+                                                      VerticalScrollBarVisibility="Auto"
+                                                      Background="White"
+                                                      AutomationProperties.Name="Differences"/>
+
+                            <GridSplitter Grid.Row="2" Style="{StaticResource PaneSplitter}" ResizeDirection="Rows"/>
+
+                            <DataGrid Grid.Row="3"
+                                      ItemsSource="{Binding DiffEntries}"
+                                      AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0,1,0,0"
+                                      BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                      HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                      CanUserResizeRows="False" EnableRowVirtualization="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      AutomationProperties.Name="Changed paragraphs">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Paragraph" Binding="{Binding ParagraphId}" Width="Auto" ElementStyle="{StaticResource MonoCellText}"/>
+                                    <DataGridTextColumn Header="Change" Binding="{Binding Kind}" Width="Auto" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Added" Binding="{Binding AddedWords}" Width="Auto" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Removed" Binding="{Binding RemovedWords}" Width="Auto" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Base text" Binding="{Binding BeforeText}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Target text" Binding="{Binding AfterText}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="ProvenancePanel" ContentId="provenance" Title="Provenance" CanClose="True">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                <DockPanel>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                        <Button Content="Verify" Command="app:AppCommands.VerifyChain" ToolTip="Verify Provenance Chain (F5)"/>
+                                        <Button Content="Test Tamper Detection..." Command="app:AppCommands.TestTamperDetection" Margin="6,0,0,0"/>
+                                        <Button Content="Export Certificate..." Command="app:AppCommands.ExportCertificate" Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock x:Name="ChainStatusGlyph" FontSize="14" Margin="0,0,8,0">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource IconGlyph}">
+                                                    <Setter Property="Text" Value="&#xE73E;"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource SystemFillColorSuccessBrush}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsChainValid}" Value="False">
+                                                            <Setter Property="Text" Value="&#xE7BA;"/>
+                                                            <Setter Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding ChainVerificationBanner}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+
+                            <!-- Grids are stacked full width so every column has room -->
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*" MinHeight="100"/>
+                                    <RowDefinition Height="6"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="150" MinHeight="70"/>
+                                    <RowDefinition Height="6"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="170" MinHeight="70"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Style="{StaticResource PaneHeader}" Text="Sentences"/>
+                                <DataGrid Grid.Row="1"
+                                          ItemsSource="{Binding Sentences}"
+                                          SelectedItem="{Binding SelectedSentence, Mode=TwoWay}"
+                                          AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                          HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                          CanUserResizeRows="False" EnableRowVirtualization="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                          AutomationProperties.Name="Sentences">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="ID" Binding="{Binding SentenceId}" Width="96" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Paragraph" Binding="{Binding ParagraphId}" Width="96" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Revisions" Binding="{Binding TotalRevisions}" Width="88" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Origin" Binding="{Binding OriginSource}" Width="150" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Text" Binding="{Binding CurrentCanonicalText}" Width="*" MinWidth="160" ElementStyle="{StaticResource CellText}"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+
+                                <GridSplitter Grid.Row="2" Style="{StaticResource PaneSplitter}" ResizeDirection="Rows"/>
+
+                                <TextBlock Grid.Row="3" Style="{StaticResource PaneHeader}" Text="Revision history of selected sentence"/>
+                                <DataGrid Grid.Row="4"
+                                          ItemsSource="{Binding SelectedSentence.RevisionHistory}"
+                                          AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                          HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                          CanUserResizeRows="False" EnableRowVirtualization="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                          AutomationProperties.Name="Sentence revision history">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Block" Binding="{Binding BlockIndex}" Width="64" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Author" Binding="{Binding Author}" Width="110" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="150" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Date" Binding="{Binding TimestampUtc, StringFormat=g}" Width="140" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Text" Binding="{Binding AfterText}" Width="*" MinWidth="160" ElementStyle="{StaticResource CellText}"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+
+                                <GridSplitter Grid.Row="5" Style="{StaticResource PaneSplitter}" ResizeDirection="Rows"/>
+
+                                <TextBlock Grid.Row="6" Style="{StaticResource PaneHeader}" Text="Signed blocks (SHA-256 Merkle root, ECDSA P-256 signature)"/>
+                                <DataGrid Grid.Row="7"
+                                          ItemsSource="{Binding ChainBlocks}"
+                                          AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                          HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                          CanUserResizeRows="False" EnableRowVirtualization="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                          AutomationProperties.Name="Signed blocks">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Block" Binding="{Binding BlockIndex}" Width="64" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Author" Binding="{Binding AuthorName}" Width="110" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Signed" Binding="{Binding TimestampUtc, StringFormat=g}" Width="140" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Block hash" Binding="{Binding BlockHash}" Width="120" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Text root" Binding="{Binding NormalizedTextMerkleRoot}" Width="120" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Message" Binding="{Binding CommitMessage}" Width="*" MinWidth="160" ElementStyle="{StaticResource CellText}"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Grid>
+                        </DockPanel>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="FormattingPanel" ContentId="formatting" Title="Formatting" CanClose="True">
+                        <Grid Margin="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="320"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="*" MinWidth="280"/>
+                            </Grid.ColumnDefinitions>
+
+                            <GroupBox Grid.Column="0" Header="Formatting rules">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                    <StackPanel Margin="4">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="FormLabel"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+
+                                            <Label Grid.Row="0" Content="_Body font:" Target="{Binding ElementName=BodyFontBox}" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="BodyFontBox" Grid.Row="0" Grid.Column="1" Margin="0,4" Text="{Binding ActiveProfile.BodyFontFamily, Mode=TwoWay}"/>
+
+                                            <Label Grid.Row="1" Content="_Heading font:" Target="{Binding ElementName=HeadingFontBox}" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="HeadingFontBox" Grid.Row="1" Grid.Column="1" Margin="0,4" Text="{Binding ActiveProfile.HeadingFontFamily, Mode=TwoWay}"/>
+
+                                            <Label Grid.Row="2" Content="Body font si_ze (pt):" Target="{Binding ElementName=BodySizeBox}" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="BodySizeBox" Grid.Row="2" Grid.Column="1" Margin="0,4" Text="{Binding ActiveProfile.BodyFontSizePt, Mode=TwoWay}"/>
+
+                                            <Label Grid.Row="3" Content="_Line spacing:" Target="{Binding ElementName=LineSpacingBox}" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="LineSpacingBox" Grid.Row="3" Grid.Column="1" Margin="0,4" Text="{Binding ActiveProfile.LineSpacingMultiplier, Mode=TwoWay}"/>
+
+                                            <Label Grid.Row="4" Content="First-line _indent (in):" Target="{Binding ElementName=IndentBox}" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="IndentBox" Grid.Row="4" Grid.Column="1" Margin="0,4" Text="{Binding ActiveProfile.FirstLineIndentInches, Mode=TwoWay}"/>
+
+                                            <Label Grid.Row="5" Content="Spacing _after (pt):" Target="{Binding ElementName=SpacingAfterBox}" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="SpacingAfterBox" Grid.Row="5" Grid.Column="1" Margin="0,4" Text="{Binding ActiveProfile.ParagraphSpacingAfterPt, Mode=TwoWay}"/>
+                                        </Grid>
+
+                                        <CheckBox Content="_Number headings (1., 1.1, 1.1.1)" IsChecked="{Binding ActiveProfile.AutoNumberHeadings, Mode=TwoWay}" Margin="0,12,0,0"/>
+                                        <CheckBox Content="_Remove pasted inline styles" IsChecked="{Binding ActiveProfile.StripForeignInlineStyles, Mode=TwoWay}" Margin="0,4,0,0"
+                                                  ToolTip="Strip font and color overrides carried over from Google Docs and Word"/>
+                                        <CheckBox Content="Single _space after sentences" IsChecked="{Binding ActiveProfile.EnforceSingleSpaceAfterPeriod, Mode=TwoWay}" Margin="0,4,0,0"/>
+                                        <CheckBox Content="Use smart _quotes" IsChecked="{Binding ActiveProfile.ConvertStraightQuotesToSmart, Mode=TwoWay}" Margin="0,4,0,0"/>
+
+                                        <Button Content="Apply Rules" Command="app:AppCommands.ApplyFormatting" HorizontalAlignment="Left" MinWidth="120" Margin="0,16,0,0"/>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </GroupBox>
+
+                            <GroupBox Grid.Column="2" Header="Google Docs sync">
+                                <DockPanel Margin="4">
+                                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,8" Style="{StaticResource SecondaryText}"
+                                               Text="Paragraphs merged into the main branch that still differ from the last Google Docs snapshot. Apply them in Google Docs with the companion browser extension, or copy the merged text."/>
+                                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button Content="Copy Merged Text" Command="app:AppCommands.CopyPatchText"/>
+                                        <Button Content="Mark as Applied" Command="app:AppCommands.MarkPatchApplied" Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                    <!-- Full text of the selected patch -->
+                                    <Grid DockPanel.Dock="Bottom" Height="190" Margin="0,8,0,0">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <Label Grid.Row="0" Content="Google Docs text:" Target="{Binding ElementName=PatchBeforeBox}" Padding="0,0,0,4"/>
+                                        <TextBox x:Name="PatchBeforeBox" Grid.Row="1" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                                 Text="{Binding SelectedPatch.BeforeText, Mode=OneWay}"/>
+                                        <Label Grid.Row="2" Content="Merged text:" Target="{Binding ElementName=PatchAfterBox}" Padding="0,8,0,4"/>
+                                        <TextBox x:Name="PatchAfterBox" Grid.Row="3" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                                 Text="{Binding SelectedPatch.AfterText, Mode=OneWay}"/>
+                                    </Grid>
+                                    <DataGrid ItemsSource="{Binding GoogleDocPatches}"
+                                              SelectedItem="{Binding SelectedPatch, Mode=TwoWay}"
+                                              ContextMenu="{StaticResource PatchContextMenu}"
+                                              AutoGenerateColumns="False" IsReadOnly="True"
+                                              HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                              CanUserResizeRows="False" EnableRowVirtualization="True"
+                                              VirtualizingPanel.VirtualizationMode="Recycling"
+                                              AutomationProperties.Name="Pending Google Docs patches">
+                                        <DataGrid.Columns>
+                                            <DataGridCheckBoxColumn Header="Applied" Binding="{Binding AppliedInGoogleDocs, Mode=OneWay}" Width="80"/>
+                                            <DataGridTextColumn Header="Section" Binding="{Binding SectionHeading}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                            <DataGridTextColumn Header="Change" Binding="{Binding ChangeSummary}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </GroupBox>
+                        </Grid>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="PaperPanel" ContentId="paper" Title="Paper" CanClose="True">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="16,12,16,16" MaxWidth="900" HorizontalAlignment="Left">
+                                <!-- The title page as a form: exports lay it out for each journal -->
+                                <TextBlock Style="{StaticResource PaneHeader}" Margin="0,0,0,4" Text="Title page"/>
+                                <TextBlock Style="{StaticResource SecondaryText}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Filled in once, laid out by each export: the Word document puts the authors and affiliations under the title, and the PDF lays out the journal's title block. The title is edited here (it is read-only on the page); it stays in the manuscript, so its changes are tracked like the text. Saved automatically and synced with the paper."/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Label Content="_Title:" Target="{Binding ElementName=TitleBox}" VerticalAlignment="Center" Padding="0,0,12,0"/>
+                                    <TextBox x:Name="TitleBox" Grid.Column="1" Text="{Binding Paper.PaperTitle, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" TextWrapping="Wrap"/>
+                                    <Label Grid.Row="1" Content="Running _head:" Target="{Binding ElementName=ShortTitleBox}" VerticalAlignment="Center" Padding="0,8,12,0"/>
+                                    <TextBox x:Name="ShortTitleBox" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" Text="{Binding Paper.ShortTitle, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="2" Content="Article _type:" Target="{Binding ElementName=ArticleTypeBox}" VerticalAlignment="Center" Padding="0,8,12,0"/>
+                                    <TextBox x:Name="ArticleTypeBox" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" Text="{Binding Paper.ArticleType, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="3" Content="_Keywords:" Target="{Binding ElementName=KeywordsBox}" VerticalAlignment="Center" Padding="0,8,12,0"/>
+                                    <DockPanel Grid.Row="3" Grid.Column="1" Margin="0,8,0,0">
+                                        <Button DockPanel.Dock="Right" Content="From Manuscript" Command="app:AppCommands.ImportKeywords" Margin="8,0,0,0"
+                                                ToolTip="Take the keywords from a &#8220;Keywords:&#8221; paragraph of the manuscript"/>
+                                        <TextBox x:Name="KeywordsBox" Text="{Binding Paper.KeywordsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="Separate keywords with semicolons"/>
+                                    </DockPanel>
+                                    <Label Grid.Row="4" Content="_Notes:" Target="{Binding ElementName=FrontNotesBox}" VerticalAlignment="Center" Padding="0,8,12,0"/>
+                                    <TextBox x:Name="FrontNotesBox" Grid.Row="4" Grid.Column="1" Margin="0,8,0,0" Text="{Binding Paper.FrontNotes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="Extra lines for the title page, e.g. a present address"/>
+                                    <Label Grid.Row="5" Content="_Draft notes:" Target="{Binding ElementName=DraftNotesBox}" VerticalAlignment="Top" Padding="0,12,12,0"/>
+                                    <StackPanel Grid.Row="5" Grid.Column="1" Margin="0,8,0,0">
+                                        <TextBox x:Name="DraftNotesBox" Text="{Binding Paper.DraftNotes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" MaxHeight="160" VerticalScrollBarVisibility="Auto"
+                                                 AutomationProperties.HelpText="Working notes for the authors, one per line"/>
+                                        <TextBlock Style="{StaticResource SecondaryText}" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                   Text="Working notes for the authors, one per line (target journal, word count, what a placeholder figure stands for). Shown in a box under the title page here and in draft exports; copies for the journal leave them out."/>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Margin="0,14,0,4" FontWeight="SemiBold" Text="Authors (in order; affiliations by number, e.g. 1,2)"/>
+                                <DataGrid x:Name="AuthorsGrid" ItemsSource="{Binding Paper.Authors}" AutoGenerateColumns="False" CanUserAddRows="True" CanUserDeleteRows="True"
+                                          CanUserReorderColumns="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" MinHeight="80" MaxHeight="240"
+                                          AutomationProperties.Name="Authors">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=LostFocus}" Width="2*"/>
+                                        <DataGridTextColumn Header="Affiliations" Binding="{Binding Affiliations, UpdateSourceTrigger=LostFocus}" Width="90"/>
+                                        <DataGridTextColumn Header="Email" Binding="{Binding Email, UpdateSourceTrigger=LostFocus}" Width="2*"/>
+                                        <DataGridTextColumn Header="ORCID" Binding="{Binding Orcid, UpdateSourceTrigger=LostFocus}" Width="1.6*"/>
+                                        <DataGridCheckBoxColumn Header="Corresponding" Binding="{Binding Corresponding, UpdateSourceTrigger=PropertyChanged}" Width="Auto"/>
+                                        <DataGridCheckBoxColumn Header="Equal" Binding="{Binding EqualContribution, UpdateSourceTrigger=PropertyChanged}" Width="Auto"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock Margin="0,12,0,4" FontWeight="SemiBold" Text="Affiliations"/>
+                                <DataGrid x:Name="AffiliationsGrid" ItemsSource="{Binding Paper.Affiliations}" AutoGenerateColumns="False" CanUserAddRows="True" CanUserDeleteRows="True"
+                                          HeadersVisibility="Column" GridLinesVisibility="Horizontal" MinHeight="70" MaxHeight="200" AutomationProperties.Name="Affiliations">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="No." Binding="{Binding Number, UpdateSourceTrigger=LostFocus}" Width="50"/>
+                                        <DataGridTextColumn Header="Department, institution, city, country" Binding="{Binding Text, UpdateSourceTrigger=LostFocus}" Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <WrapPanel Margin="0,10,0,0">
+                                    <Button Content="Export PDF with LaTeX..." Command="app:AppCommands.ExportPdf" Style="{DynamicResource AccentButtonStyle}" Margin="0,0,8,8"/>
+                                    <Button Content="Export LaTeX Source..." Command="app:AppCommands.ExportLatexSource" Margin="0,0,8,8"/>
+                                </WrapPanel>
+
+                                <TextBlock Style="{StaticResource PaneHeader}" Margin="0,20,0,8" Text="Target journal"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="360"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Label Content="_Journal:" Target="{Binding ElementName=JournalCombo}" VerticalAlignment="Center" Padding="0,0,12,0"/>
+                                    <ComboBox x:Name="JournalCombo" Grid.Column="1" ItemsSource="{Binding Paper.Journals}" DisplayMemberPath="Name"
+                                              SelectedValuePath="Id" SelectedValue="{Binding Paper.SelectedJournal.Id, Mode=OneWay}"
+                                              SelectionChanged="OnJournalSelectionChanged"/>
+                                    <Label Grid.Row="1" Content="Citation _style:" Target="{Binding ElementName=CitationStyleCombo}" VerticalAlignment="Center" Padding="0,8,12,0"/>
+                                    <ComboBox x:Name="CitationStyleCombo" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" ItemsSource="{Binding Paper.CitationStyleOptions}" DisplayMemberPath="Name"
+                                              SelectedValuePath="Id" SelectedValue="{Binding Paper.SelectedCitationStyle.Id, Mode=OneWay}"
+                                              SelectionChanged="OnCitationStyleSelectionChanged"/>
+                                </Grid>
+                                <TextBlock Text="{Binding Paper.JournalSummary}" TextWrapping="Wrap" Margin="0,12,0,0" LineHeight="20"/>
+
+                                <TextBlock Style="{StaticResource PaneHeader}" Margin="0,20,0,8" Text="Prepare the submission"/>
+                                <TextBlock Style="{StaticResource SecondaryText}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="The Checks pane lists what the journal asks for that the manuscript does not meet yet. The review copy has line and page numbers for reviewers and can be imported back after co-authors comment on it in Word; the submission copy is clean. Mark the version you submit so the revision can be compared with it later."/>
+                                <WrapPanel>
+                                    <Button Content="Add Required Sections..." Command="app:AppCommands.AddRequiredSections" Margin="0,0,8,8"/>
+                                    <Button Content="Export Review Copy..." Command="app:AppCommands.ExportReviewCopy" Margin="0,0,8,8"/>
+                                    <Button Content="Export Submission Copy..." Command="app:AppCommands.ExportSubmissionCopy" Margin="0,0,8,8"/>
+                                    <Button Content="Export Highlights File..." Command="app:AppCommands.ExportHighlights" Margin="0,0,8,8"/>
+                                    <Button Content="Mark as Submitted" Command="app:AppCommands.MarkSubmitted" Margin="0,0,8,8"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="ReferencesPanel" ContentId="references" Title="References" CanClose="True">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                <DockPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Content="Cite" Command="app:AppCommands.CiteSelectedReferences" ToolTip="Insert a citation to the selected references at the cursor"/>
+                                        <Button Content="Add by DOI..." Command="app:AppCommands.AddReferencesByDoi" Margin="6,0,0,0"/>
+                                        <Button Content="Add Cited from Zotero" Command="app:AppCommands.AddReferencesFromZotero" Margin="6,0,0,0"
+                                                ToolTip="Fetches the citation keys used in the text that are not in the bibliography from Zotero (Better BibTeX)"/>
+                                        <Button Content="Check Online" Command="app:AppCommands.CheckReferencesOnline" Margin="6,0,0,0"
+                                                ToolTip="Checks that each DOI resolves and whether Crossref (with Retraction Watch) lists a retraction or expression of concern"/>
+                                        <Button Content="Open .bib" Command="app:AppCommands.OpenBibliography" Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                                        <TextBlock Style="{StaticResource SecondaryText}" Text="Filter:" Margin="0,0,8,0"/>
+                                        <TextBox Width="200" Text="{Binding Paper.ReferenceFilter, UpdateSourceTrigger=PropertyChanged, Delay=250}"
+                                                 ToolTip="Filter by author, year, title, key or DOI" AutomationProperties.Name="Filter references"/>
+                                    </StackPanel>
+                                    <Border/>
+                                </DockPanel>
+                            </Border>
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource SecondaryText}" Margin="12,8" TextWrapping="Wrap" Text="{Binding Paper.BibliographyStatus}"/>
+                            <DataGrid x:Name="ReferencesGrid" ItemsSource="{Binding Paper.References}" AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                      HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Extended" CanUserResizeRows="False"
+                                      EnableRowVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                      MouseDoubleClick="OnReferenceDoubleClick" AutomationProperties.Name="References">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Key" Binding="{Binding Key}" Width="180" ElementStyle="{StaticResource MonoCellText}"/>
+                                    <DataGridTextColumn Header="Authors" Binding="{Binding Authors}" Width="140" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Year" Binding="{Binding Year}" Width="50" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="*" MinWidth="160" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Journal" Binding="{Binding Container}" Width="120" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Use" Binding="{Binding CitationsText}" Width="90" ElementStyle="{StaticResource CellText}"/>
+                                    <DataGridTextColumn Header="Online check" Binding="{Binding OnlineStatus}" Width="150" ElementStyle="{StaticResource CellText}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="FiguresPanel" ContentId="figures" Title="Figures" CanClose="True">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" MinHeight="140"/>
+                                <RowDefinition Height="6"/>
+                                <RowDefinition Height="*" MinHeight="140"/>
+                            </Grid.RowDefinitions>
+                            <DockPanel>
+                                <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource SecondaryText}" FontWeight="SemiBold" Text="Figures, tables and equations" Margin="4,0,12,0"/>
+                                        <Button Content="Figure..." Command="app:AppCommands.InsertFigure"/>
+                                        <Button Content="Table..." Command="app:AppCommands.InsertTable" Margin="6,0,0,0"/>
+                                        <Button Content="Equation..." Command="app:AppCommands.InsertEquation" Margin="6,0,0,0"/>
+                                        <Button Content="Edit" Command="app:AppCommands.EditScholarlyItem" CommandParameter="{Binding SelectedItem, ElementName=NumberedItemsGrid}" Margin="12,0,0,0"/>
+                                        <Button Content="Remove" Command="app:AppCommands.RemoveScholarlyItem" CommandParameter="{Binding SelectedItem, ElementName=NumberedItemsGrid}" Margin="6,0,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                                <DataGrid x:Name="NumberedItemsGrid" ItemsSource="{Binding Paper.NumberedItems}" AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                          HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single" CanUserResizeRows="False"
+                                          MouseDoubleClick="OnNumberedItemDoubleClick" AutomationProperties.Name="Figures, tables and equations">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Item" Binding="{Binding Title}" Width="90" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Refer to it as" Binding="{Binding Reference}" Width="150" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Caption" Binding="{Binding Caption}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="File" Binding="{Binding File}" Width="180" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridCheckBoxColumn Header="Missing" Binding="{Binding FileMissing, Mode=OneWay}" Width="64"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                            <GridSplitter Grid.Row="1" Style="{StaticResource PaneSplitter}" ResizeDirection="Rows"/>
+                            <DockPanel Grid.Row="2">
+                                <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource SecondaryText}" FontWeight="SemiBold" Text="Results the text links to" Margin="4,0,12,0"/>
+                                        <Button Content="Add Results File..." Command="app:AppCommands.AddResultsFile"
+                                                ToolTip="A CSV or JSON file written by your analysis (R, Python, Stride); it is copied into the results folder and can be refreshed after the analysis is rerun"/>
+                                        <Button Content="Refresh" Command="app:AppCommands.RefreshResults" Margin="6,0,0,0" ToolTip="Copy again every results file whose analysis output changed"/>
+                                        <Button Content="Insert in Text" Command="app:AppCommands.InsertSelectedValue" CommandParameter="{Binding SelectedItem, ElementName=ResultValuesGrid}" Margin="12,0,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="2*"/>
+                                        <ColumnDefinition Width="6"/>
+                                        <ColumnDefinition Width="3*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <DataGrid ItemsSource="{Binding Paper.ResultsSources}" SelectedItem="{Binding Paper.SelectedResultsSource, Mode=TwoWay}"
+                                              AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None"
+                                              SelectionMode="Single" CanUserResizeRows="False" AutomationProperties.Name="Results files">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="100" ElementStyle="{StaticResource MonoCellText}"/>
+                                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                            <DataGridTextColumn Header="Origin" Binding="{Binding Origin}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                    <GridSplitter Grid.Column="1" Style="{StaticResource PaneSplitter}" ResizeDirection="Columns"/>
+                                    <DataGrid x:Name="ResultValuesGrid" Grid.Column="2" ItemsSource="{Binding Paper.ResultValues}" AutoGenerateColumns="False" IsReadOnly="True"
+                                              BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single" CanUserResizeRows="False"
+                                              EnableRowVirtualization="True" MouseDoubleClick="OnResultValueDoubleClick" AutomationProperties.Name="Result values">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Value" Binding="{Binding Key}" Width="*" ElementStyle="{StaticResource MonoCellText}"/>
+                                            <DataGridTextColumn Header="Number" Binding="{Binding Value}" Width="110" ElementStyle="{StaticResource MonoCellText}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </Grid>
+                            </DockPanel>
+                        </Grid>
+                                    </ad:LayoutDocument>
+                                    <ad:LayoutDocument x:Name="ReviewersPanel" ContentId="reviewers" Title="Reviewers" CanClose="True">
+                        <DockPanel>
+                            <Border DockPanel.Dock="Top" Style="{StaticResource CommandStrip}">
+                                <DockPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Label Content="R_ound:" Target="{Binding ElementName=RoundCombo}" VerticalAlignment="Center" Padding="4,0,8,0"/>
+                                        <ComboBox x:Name="RoundCombo" Width="160" ItemsSource="{Binding Paper.Rounds}" DisplayMemberPath="Name" SelectedItem="{Binding Paper.SelectedRound, Mode=TwoWay}"/>
+                                        <Button Content="Add Comments..." Command="app:AppCommands.AddReviewComments" Margin="12,0,0,0"/>
+                                        <Button Content="Export Revision..." Command="app:AppCommands.ExportRevision" Margin="6,0,0,0"
+                                                ToolTip="The revised manuscript, the marked-up manuscript and the response letter with page and line numbers"/>
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource SecondaryText}" Margin="12,8" TextWrapping="Wrap" Text="{Binding Paper.RoundSummary}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" MinWidth="220"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*" MinWidth="280"/>
+                                </Grid.ColumnDefinitions>
+                                <DataGrid ItemsSource="{Binding Paper.Comments}" SelectedItem="{Binding Paper.SelectedComment, Mode=TwoWay}"
+                                          AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None"
+                                          SelectionMode="Single" CanUserResizeRows="False" AutomationProperties.Name="Reviewer comments">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Point" Binding="{Binding Id}" Width="56" ElementStyle="{StaticResource MonoCellText}"/>
+                                        <DataGridTextColumn Header="Status" Binding="{Binding StatusText}" Width="72" ElementStyle="{StaticResource CellText}"/>
+                                        <DataGridTextColumn Header="Comment" Binding="{Binding ShortText}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <GridSplitter Grid.Column="1" Style="{StaticResource PaneSplitter}" ResizeDirection="Columns"/>
+                                <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" IsEnabled="{Binding Paper.SelectedComment, Converter={StaticResource NotNull}}">
+                                    <StackPanel Margin="12,8,12,12">
+                                        <TextBlock FontWeight="SemiBold">
+                                            <Run Text="{Binding Paper.SelectedComment.Id, Mode=OneWay}"/>
+                                            <Run Text="{Binding Paper.SelectedComment.Reviewer, Mode=OneWay}"/>
+                                        </TextBlock>
+                                        <TextBox Text="{Binding Paper.SelectedComment.Text, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontStyle="Italic"
+                                                 MaxHeight="220" VerticalScrollBarVisibility="Auto" Margin="0,6,0,0" BorderThickness="0" Background="Transparent"/>
+                                        <!-- Lines of the submitted version the reviewer refers to -->
+                                        <ItemsControl ItemsSource="{Binding Paper.SelectedComment.LineReferences, Mode=OneWay}" Margin="0,6,0,0">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel/>
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Button Command="app:AppCommands.GoToReviewerLine" CommandParameter="{Binding}" Margin="0,0,6,6"
+                                                            ToolTip="Show the paragraph that was at this line of the submitted version">
+                                                        <TextBlock>
+                                                            <Run Text="Go to"/>
+                                                            <Run Text="{Binding Label, Mode=OneWay}"/>
+                                                        </TextBlock>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <Label Content="Your _response:" Target="{Binding ElementName=ResponseBox}" Padding="0,0,0,4"/>
+                                        <TextBox x:Name="ResponseBox" Text="{Binding Paper.SelectedComment.Response, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 TextWrapping="Wrap" AcceptsReturn="True" MinLines="5" MaxLines="16" VerticalScrollBarVisibility="Auto"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <Label Content="_Status:" Target="{Binding ElementName=CommentStatusCombo}" VerticalAlignment="Center" Padding="0,0,8,0"/>
+                                            <ComboBox x:Name="CommentStatusCombo" Width="140" SelectedItem="{Binding Paper.SelectedComment.Status, Mode=TwoWay}"
+                                                      ItemsSource="{Binding Source={x:Static app:MainWindow.CommentStatuses}}"/>
+                                        </StackPanel>
+                                        <TextBlock FontWeight="SemiBold" Margin="0,16,0,4" Text="Changes in the manuscript"/>
+                                        <TextBlock Style="{StaticResource SecondaryText}" TextWrapping="Wrap" Text="{Binding Paper.SelectedComment.LinkSummary, Mode=OneWay}"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,4,0,0" Text="{Binding Paper.SelectedComment.LinkedParagraphs, Mode=OneWay}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <Button Content="Link Paragraph at Cursor" Command="app:AppCommands.LinkCommentToParagraph"
+                                                    ToolTip="Put the cursor in the paragraph you changed (Document tab), then link it; the response letter quotes its revised text with page and line numbers"/>
+                                            <Button Content="Remove Links" Command="app:AppCommands.UnlinkComment" Margin="6,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </Grid>
+                        </DockPanel>
+                                    </ad:LayoutDocument>
+                                </ad:LayoutDocumentPane>
+                            </ad:LayoutDocumentPaneGroup>
+                            <ad:LayoutAnchorablePane DockWidth="380" DockMinWidth="260">
+                                <ad:LayoutAnchorable x:Name="ChangesPanel" ContentId="changes" Title="Changes" CanClose="False" CanHide="True">
+
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*" MinHeight="120"/>
+                            <RowDefinition Height="6"/>
+                            <RowDefinition Height="300" MinHeight="200"/>
+                        </Grid.RowDefinitions>
+
+
+                        <Border Grid.Row="1" Style="{StaticResource CommandStrip}">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Label Content="_Show:" Target="{Binding ElementName=HunkFilterCombo}" VerticalAlignment="Center" Padding="8,0,8,0"/>
+                                    <ComboBox x:Name="HunkFilterCombo" Width="130" ItemsSource="{Binding HunkFilters}" SelectedItem="{Binding SelectedHunkFilter, Mode=TwoWay}"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Accept All" Command="app:AppCommands.AcceptAllChanges"/>
+                                    <Button Content="Reject All" Command="app:AppCommands.RejectAllChanges" Margin="6,0,0,0"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <DataGrid Grid.Row="2"
+                                  ItemsSource="{Binding FilteredHunks}"
+                                  SelectedItem="{Binding SelectedHunk, Mode=TwoWay}"
+                                  ContextMenu="{StaticResource HunkContextMenu}"
+                                  AutoGenerateColumns="False" IsReadOnly="True" BorderThickness="0"
+                                  HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single"
+                                  CanUserResizeRows="False" EnableRowVirtualization="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                  AutomationProperties.Name="Changes">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Paragraph" Binding="{Binding ParagraphId}" Width="Auto" ElementStyle="{StaticResource MonoCellText}"/>
+                                <DataGridTextColumn Header="Type" Binding="{Binding TypeBadgeText}" Width="Auto" ElementStyle="{StaticResource CellText}"/>
+                                <DataGridTextColumn Header="Status" Binding="{Binding StatusBadgeText}" Width="Auto" ElementStyle="{StaticResource CellText}"/>
+                                <DataGridTextColumn Header="Proposed" Binding="{Binding EditableProposedText}" Width="*" ElementStyle="{StaticResource CellText}"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <GridSplitter Grid.Row="3" Style="{StaticResource PaneSplitter}" ResizeDirection="Rows"/>
+
+                        <DockPanel Grid.Row="4" Margin="12,0,12,12">
+                            <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Margin="0,4,0,6" Text="Selected change"/>
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource SecondaryText}" TextTrimming="CharacterEllipsis" Margin="0,0,0,8"
+                                       Visibility="{Binding SelectedHunk, Converter={StaticResource NotNull}}">
+                                <Run Text="{Binding SelectedHunk.TypeBadgeText, Mode=OneWay}"/>
+                                <Run Text="by"/>
+                                <Run Text="{Binding SelectedHunk.Author, Mode=OneWay}"/>
+                                <Run Text="{Binding SelectedHunk.TimestampText, Mode=OneWay}"/>
+                            </TextBlock>
+                            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
+                                <Button Content="_Accept" Command="app:AppCommands.AcceptChange" MinWidth="80"/>
+                                <Button Content="_Reject" Command="app:AppCommands.RejectChange" MinWidth="80" Margin="6,0,0,0"/>
+                                <Button Content="Mark as _Pending" Command="app:AppCommands.ResetChange" Margin="6,0,0,0"/>
+                            </StackPanel>
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <Label Grid.Row="0" Content="Original text:" Target="{Binding ElementName=HunkOriginalBox}" Padding="0,0,0,4"/>
+                                <TextBox x:Name="HunkOriginalBox" Grid.Row="1"
+                                         Text="{Binding SelectedHunk.OriginalText, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"/>
+                                <Label Grid.Row="2" Content="Proposed text or _comment:" Target="{Binding ElementName=HunkProposedBox}" Padding="0,8,0,4"/>
+                                <TextBox x:Name="HunkProposedBox" Grid.Row="3"
+                                         Text="{Binding SelectedHunk.EditableProposedText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         IsEnabled="{Binding SelectedHunk, Converter={StaticResource NotNull}}"
+                                         IsReadOnly="{Binding IsBusy}"
+                                         TextWrapping="Wrap"
+                                         AcceptsReturn="True"
+                                         VerticalScrollBarVisibility="Auto"/>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+
+                                </ad:LayoutAnchorable>
+                                <ad:LayoutAnchorable x:Name="ChecksPanel" ContentId="checks" Title="Checks" CanClose="False" CanHide="True">
+
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*" MinHeight="120"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Border Style="{StaticResource CommandStrip}">
+                                <DockPanel>
+                                    <ComboBox DockPanel.Dock="Right" Width="140" ItemsSource="{Binding Paper.IssueFilters}" SelectedItem="{Binding Paper.IssueFilter, Mode=TwoWay}"
+                                              AutomationProperties.Name="Show issues of kind"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Content="Check Now" Command="app:AppCommands.CheckManuscript"/>
+                                        <CheckBox Content="Suggestions" IsChecked="{Binding Paper.ShowInfo, Mode=TwoWay}" Margin="10,0,0,0" VerticalAlignment="Center"
+                                                  ToolTip="Show suggestions as well as warnings and errors"/>
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+                            <TextBlock Grid.Row="1" Style="{StaticResource SecondaryText}" Margin="12,6" Text="{Binding Paper.IssueSummary}"/>
+                            <ListBox x:Name="IssuesList" Grid.Row="2" ItemsSource="{Binding Paper.Issues}" BorderThickness="0" Background="Transparent"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" VirtualizingPanel.IsVirtualizing="True"
+                                     MouseDoubleClick="OnIssueDoubleClick" AutomationProperties.Name="Checks">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="22"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="Glyph" Style="{StaticResource IconGlyph}" FontSize="13" Text="{Binding SeverityGlyph}" VerticalAlignment="Top" Margin="0,2,0,0"
+                                                       ToolTip="{Binding SeverityText}" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{Binding Message}" TextWrapping="Wrap"/>
+                                                <TextBlock FontSize="11.5" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis">
+                                                    <Run Text="{Binding Category, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Location, Mode=OneWay}"/>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Grid>
+                                        <DataTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding SeverityText}" Value="Error">
+                                                <Setter TargetName="Glyph" Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding SeverityText}" Value="Warning">
+                                                <Setter TargetName="Glyph" Property="Foreground" Value="{DynamicResource SystemFillColorCautionBrush}"/>
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                                <ListBox.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Command="app:AppCommands.GoToIssue" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                        <MenuItem Command="app:AppCommands.FixIssue" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                        <MenuItem Command="app:AppCommands.DismissIssue" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                        <MenuItem Command="app:AppCommands.AllowAbbreviation" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                        <Separator/>
+                                        <MenuItem Command="app:AppCommands.RestoreDismissedIssues"/>
+                                    </ContextMenu>
+                                </ListBox.ContextMenu>
+                            </ListBox>
+                            <Border Grid.Row="3" Style="{StaticResource FooterStrip}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Go To" Command="app:AppCommands.GoToIssue" CommandParameter="{Binding SelectedItem, ElementName=IssuesList}"/>
+                                    <Button Content="{Binding SelectedItem.FixLabel, ElementName=IssuesList, FallbackValue=Fix, TargetNullValue=Fix}" Command="app:AppCommands.FixIssue"
+                                            CommandParameter="{Binding SelectedItem, ElementName=IssuesList}" Margin="6,0,0,0" MaxWidth="200"/>
+                                    <Button Content="Dismiss" Command="app:AppCommands.DismissIssue" CommandParameter="{Binding SelectedItem, ElementName=IssuesList}" Margin="6,0,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                                </ad:LayoutAnchorable>
+                                <!-- Notes about the paper ("shower thoughts") and the placeholders still in it -->
+                                <ad:LayoutAnchorable x:Name="NotesPanel" ContentId="notes" Title="Notes" CanClose="False" CanHide="True">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*" MinHeight="120"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Border Style="{StaticResource CommandStrip}">
+                                <StackPanel>
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Content="Add" Margin="6,0,0,0" Click="OnAddQuickNote" ToolTip="Add the note (Enter)"/>
+                                        <Grid>
+                                            <TextBox x:Name="QuickNoteBox" KeyDown="OnQuickNoteKeyDown" AutomationProperties.Name="New note"
+                                                     ToolTip="Type an idea and press Enter. Add #tags to find it again; Ctrl+Alt+M writes one from anywhere."/>
+                                            <TextBlock Text="A thought for the paper… (Enter adds it)" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Text, ElementName=QuickNoteBox}" Value="">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+                                    </DockPanel>
+                                    <CheckBox x:Name="QuickNoteAboutParagraph" Content="About the paragraph at the cursor" Margin="0,6,0,0"
+                                              ToolTip="Ties the note to the paragraph the cursor is in on the Document page"/>
+                                </StackPanel>
+                            </Border>
+                            <DockPanel Grid.Row="1" Margin="12,6,12,4">
+                                <CheckBox DockPanel.Dock="Right" Content="Show done" IsChecked="{Binding Paper.ShowDoneNotes, Mode=TwoWay}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                <Grid>
+                                    <TextBox x:Name="NoteSearchBox" Text="{Binding Paper.NoteSearch, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Search notes"
+                                             ToolTip="Search the notes; #tag finds the notes with that tag"/>
+                                    <TextBlock Text="Search notes, or #tag" Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
+                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Text, ElementName=NoteSearchBox}" Value="">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </DockPanel>
+                            <DockPanel Grid.Row="2">
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource SecondaryText}" Margin="12,2,12,4" Text="{Binding Paper.NotesSummary}" TextWrapping="Wrap"/>
+                                <ListBox x:Name="NotesList" ItemsSource="{Binding Paper.Notes}" BorderThickness="0" Background="Transparent"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="OnNoteDoubleClick" AutomationProperties.Name="Notes">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox IsChecked="{Binding Done, Mode=TwoWay}" VerticalAlignment="Top" Margin="0,1,6,0" MinWidth="0" ToolTip="Done"
+                                                          AutomationProperties.Name="Done"/>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock x:Name="NoteText" Text="{Binding Text}" TextWrapping="Wrap"/>
+                                                    <TextBlock FontSize="11.5" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Text="{Binding Details}"/>
+                                                </StackPanel>
+                                                <ToggleButton Grid.Column="2" IsChecked="{Binding Pinned, Mode=TwoWay}" VerticalAlignment="Top" Padding="4,2" Margin="6,0,0,0"
+                                                              ToolTip="Pin to the top" AutomationProperties.Name="Pin">
+                                                    <TextBlock Style="{StaticResource IconGlyph}" FontSize="12" Text="{Binding PinGlyph}"/>
+                                                </ToggleButton>
+                                            </Grid>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding Done}" Value="True">
+                                                    <Setter TargetName="NoteText" Property="TextDecorations" Value="Strikethrough"/>
+                                                    <Setter TargetName="NoteText" Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                    <ListBox.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Command="app:AppCommands.EditNote" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                            <MenuItem Command="app:AppCommands.GoToNoteParagraph" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                            <MenuItem Command="app:AppCommands.DeleteNote" CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                        </ContextMenu>
+                                    </ListBox.ContextMenu>
+                                </ListBox>
+                            </DockPanel>
+                            <!-- The placeholders in the manuscript, to fill in before submitting -->
+                            <Expander Grid.Row="3" IsExpanded="True" Margin="8,4,8,8">
+                                <Expander.Header>
+                                    <TextBlock FontWeight="SemiBold" Text="{Binding Paper.PlaceholderSummary}" TextWrapping="Wrap"/>
+                                </Expander.Header>
+                                <ListBox x:Name="PlaceholdersList" ItemsSource="{Binding Paper.Placeholders}" MaxHeight="220" BorderThickness="0" Background="Transparent"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="OnPlaceholderDoubleClick" AutomationProperties.Name="Placeholders">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,3">
+                                                <TextBlock Text="{Binding Message}" TextWrapping="Wrap"/>
+                                                <TextBlock FontSize="11.5" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Text="{Binding Location}"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Expander>
+                        </Grid>
+                                </ad:LayoutAnchorable>
+                            </ad:LayoutAnchorablePane>
+                        </ad:LayoutPanel>
+                    </ad:LayoutRoot>
+                </ad:DockingManager>
+            </Grid>
+
+            <!-- Shown when no workspace is open -->
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460"
+                        Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}, ConverterParameter=Invert}">
+                <TextBlock Style="{StaticResource IconGlyph}" Text="&#xE838;" FontSize="40" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,16"/>
+                <TextBlock Text="No workspace is open" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                <TextBlock Style="{StaticResource SecondaryText}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,20"
+                           Text="Open the folder that holds your manuscript, or an empty folder to start a new one. Revisions Editor keeps its history in a Git repository in that folder."/>
+                <Button Content="Open Workspace..." Command="app:AppCommands.OpenWorkspace" HorizontalAlignment="Center" MinWidth="160" Style="{DynamicResource AccentButtonStyle}"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Status bar -->
+        <StatusBar Grid.Row="3">
+            <StatusBar.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                    </Grid>
+                </ItemsPanelTemplate>
+            </StatusBar.ItemsPanel>
+
+            <StatusBarItem Grid.Column="0" Padding="8,2">
+                <Grid>
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}, ConverterParameter=Invert}">
+                        <TextBlock Text="{Binding StatusBarSummary}"/>
+                        <TextBlock Text="{Binding EditorPositionText}" Margin="16,0,0,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+                        <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="96" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Text="{Binding BusyText}"/>
+                    </StackPanel>
+                </Grid>
+            </StatusBarItem>
+            <Separator Grid.Column="1" Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}}"/>
+            <StatusBarItem Grid.Column="2" Padding="8,2" Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock FontSize="12" Margin="0,0,6,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource IconGlyph}">
+                                <Setter Property="Text" Value="&#xE73E;"/>
+                                <Setter Property="Foreground" Value="{DynamicResource SystemFillColorSuccessBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsChainValid}" Value="False">
+                                        <Setter Property="Text" Value="&#xE7BA;"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding ChainVerificationBanner}" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </StatusBarItem>
+            <StatusBarItem Grid.Column="3" Padding="8,2" Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}}"
+                           ToolTip="{Binding RemoteUrl}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource IconGlyph}" FontSize="12" Margin="0,0,6,0" Text="&#xE753;"/>
+                    <TextBlock Text="{Binding RemoteDisplayText}"/>
+                </StackPanel>
+            </StatusBarItem>
+            <Separator Grid.Column="4"/>
+            <StatusBarItem Grid.Column="5" Padding="8,2">
+                <TextBlock Text="{Binding BridgeStatusText}"/>
+            </StatusBarItem>
+            <Separator Grid.Column="6" Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}}"/>
+            <StatusBarItem Grid.Column="7" Padding="8,2" Visibility="{Binding HasWorkspace, Converter={StaticResource BoolToVisibility}}"
+                           ToolTip="Author signing key fingerprint">
+                <TextBlock Text="{Binding AuthorKeyFingerprint}" FontFamily="{StaticResource MonoFont}"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>

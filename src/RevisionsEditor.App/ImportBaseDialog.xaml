@@ -1,0 +1,36 @@
+<Window x:Class="RevisionsEditor.App.ImportBaseDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Import Reviewed Document"
+        Width="620"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource ApplicationBackgroundBrush}"
+        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+        FocusManager.FocusedElement="{Binding ElementName=BaseComboBox}">
+    <Grid Margin="20,16,20,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="IntroText" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+        <Label Grid.Row="1" Content="The reviewer was sent _this version:" Target="{Binding ElementName=BaseComboBox}" Padding="0,0,0,4"/>
+        <ComboBox x:Name="BaseComboBox" Grid.Row="2" DisplayMemberPath="Label"/>
+
+        <TextBlock Grid.Row="3" TextWrapping="Wrap" Margin="0,12,0,0" FontSize="12"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                   Text="The review branch starts from that version, so only the reviewer's own edits show as changes. When you merge it into main, everything written on main since then is kept; edits that touch the same words become pending changes to accept or reject."/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Content="_Import" IsDefault="True" MinWidth="96" Click="OnImportClick"/>
+            <Button Content="Cancel" IsCancel="True" MinWidth="96" Margin="8,0,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

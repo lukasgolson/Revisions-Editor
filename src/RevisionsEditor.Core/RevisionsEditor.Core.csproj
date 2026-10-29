@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Vector figures: SVG is drawn with Skia (to PDF for LaTeX, to PNG for Word and the preview); PDF figures are
+         rendered with PDFium for the preview and Word. -->
+    <PackageReference Include="Svg.Skia" Version="5.2.3" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+  </ItemGroup>
+</Project>

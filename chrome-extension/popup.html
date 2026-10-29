@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Revisions Editor Bridge</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f3f3;
+      --surface: #ffffff;
+      --border: #e5e5e5;
+      --text: #1a1a1a;
+      --text-secondary: #616161;
+      --accent: #005fb8;
+      --accent-text: #ffffff;
+      --success: #0f7b0f;
+      --critical: #c42b1c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #202020;
+        --surface: #2b2b2b;
+        --border: #3a3a3a;
+        --text: #ffffff;
+        --text-secondary: #c5c5c5;
+        --accent: #60cdff;
+        --accent-text: #000000;
+        --success: #6ccb5f;
+        --critical: #ff99a4;
+      }
+    }
+    body {
+      width: 320px;
+      margin: 0;
+      padding: 16px;
+      font: 13px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .status {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    .status-title { font-weight: 600; }
+    .status-title.connected { color: var(--success); }
+    .status-title.offline { color: var(--critical); }
+    .status-row { color: var(--text-secondary); }
+    button {
+      display: block;
+      width: 100%;
+      min-height: 32px;
+      margin-bottom: 8px;
+      padding: 5px 12px;
+      font: inherit;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      cursor: default;
+    }
+    button:hover:not(:disabled) { filter: brightness(0.97); }
+    button.primary {
+      color: var(--accent-text);
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    button:disabled { opacity: 0.45; }
+    .tab-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .tab-row span { color: var(--text-secondary); white-space: nowrap; }
+    .tab-row select {
+      flex: 1;
+      min-width: 0;
+      min-height: 30px;
+      padding: 3px 6px;
+      font: inherit;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    #message { color: var(--text-secondary); min-height: 1.4em; }
+    #message.error { color: var(--critical); }
+    details {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+    summary { color: var(--text); cursor: default; }
+    ol { margin: 8px 0 0; padding-left: 18px; }
+    li { margin-bottom: 6px; }
+    a { color: var(--accent); }
+    .copy-row { display: flex; gap: 6px; margin-top: 4px; }
+    .copy-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 4px 8px;
+      font: 12px "Cascadia Mono", Consolas, monospace;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .copy-row button { width: auto; margin: 0; min-height: 28px; }
+  </style>
+</head>
+<body>
+  <h1>Revisions Editor Bridge</h1>
+  <div id="statusBox" class="status" aria-live="polite">Checking for Revisions Editor...</div>
+  <label class="tab-row" for="tabSelect">
+    <span>Document tab</span>
+    <select id="tabSelect" disabled><option value="">Current tab</option></select>
+  </label>
+  <button id="pullDocBtn" class="primary" disabled>Send Document to Revisions Editor</button>
+  <button id="applyBtn" disabled>Apply Merged Changes to Document</button>
+  <button id="toggleDrawerBtn" disabled>Show Merged Changes in Document</button>
+  <div id="message" aria-live="polite"></div>
+
+  <details id="setup">
+    <summary>Set up Google Docs access</summary>
+    <p>Needed to apply merged changes automatically and to send a single document tab.</p>
+    <ol>
+      <li>In the <a href="https://console.cloud.google.com/apis/library/docs.googleapis.com" target="_blank" rel="noopener">Google Cloud console</a>, enable the <b>Google Docs API</b> for a project.</li>
+      <li>Under <b>OAuth consent screen</b>, add your Google account as a test user.</li>
+      <li>Under <b>Credentials</b>, create an <b>OAuth client ID</b> of type <b>Web application</b> with this authorized redirect URI:
+        <div class="copy-row"><input id="redirectUrl" readonly aria-label="Redirect URI" /><button id="copyRedirect" type="button">Copy</button></div>
+      </li>
+      <li>Paste the client ID here:
+        <div class="copy-row"><input id="clientId" placeholder="…apps.googleusercontent.com" aria-label="OAuth client ID" /><button id="saveClientId" type="button">Save</button></div>
+      </li>
+    </ol>
+  </details>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+<Window x:Class="RevisionsEditor.App.GitHubDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Connect to GitHub"
+        Width="540"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource ApplicationBackgroundBrush}"
+        Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+        FocusManager.FocusedElement="{Binding ElementName=UrlTextBox}">
+    <Grid Margin="20,16,20,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="IntroText" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+
+        <Label Grid.Row="1" Content="Repository _URL:" Target="{Binding ElementName=UrlTextBox}" Padding="0,0,0,4"/>
+        <TextBox x:Name="UrlTextBox" Grid.Row="2" TextChanged="OnInputChanged"/>
+
+        <StackPanel x:Name="FolderPanel" Grid.Row="3" Margin="0,12,0,0" Visibility="Collapsed">
+            <Label Content="Download _into folder:" Target="{Binding ElementName=FolderTextBox}" Padding="0,0,0,4"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="FolderTextBox" TextChanged="OnInputChanged"/>
+                <Button Grid.Column="1" Content="_Browse..." Margin="8,0,0,0" Click="OnBrowseClick"/>
+            </Grid>
+        </StackPanel>
+
+        <TextBlock x:Name="HintText" Grid.Row="4" TextWrapping="Wrap" Margin="0,12,0,0" FontSize="12"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button x:Name="OkButton" IsDefault="True" MinWidth="96" IsEnabled="False" Click="OnOkClick"/>
+            <Button Content="Cancel" IsCancel="True" MinWidth="96" Margin="8,0,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

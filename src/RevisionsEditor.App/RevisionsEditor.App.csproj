@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyTitle>Revisions Editor</AssemblyTitle>
+    <Product>Revisions Editor</Product>
+    <Description>Git version control, Word Track Changes and signed authorship provenance for academic manuscripts.</Description>
+    <!-- Application.ThemeMode (Windows 11 Fluent theme) is flagged experimental in WPF. -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RevisionsEditor.Tests" />
+    <ProjectReference Include="..\RevisionsEditor.Core\RevisionsEditor.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dirkster.AvalonDock" Version="5.0.1" />
+    <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="5.0.1" />
+    <PackageReference Include="Dirkster.AvalonDock.Serializer.Xml" Version="5.0.1" />
+  </ItemGroup>
+
+  <!--
+    Tectonic, the LaTeX engine that typesets PDF exports, ships next to the app (tools\tectonic\tectonic.exe).
+    The build downloads the pinned release once (over HTTPS from GitHub) into tools\tectonic\<version> at the
+    repository root. The release publishes no checksum: set TectonicSha256 to the archive's SHA-256 to pin the
+    exact file. (A copy the app downloads itself is checked against the release's size.)
+    Build with -p:SkipTectonic=true to leave it out; the app then offers to download it on first use.
+  -->
+  <PropertyGroup>
+    <TectonicVersion>0.15.0</TectonicVersion>
+    <TectonicUrl>https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%25400.15.0/tectonic-0.15.0-x86_64-pc-windows-msvc.zip</TectonicUrl>
+    <TectonicSha256></TectonicSha256>
+    <TectonicDir>$(MSBuildThisFileDirectory)..\..\tools\tectonic\$(TectonicVersion)\</TectonicDir>
+    <TectonicExe>$(TectonicDir)tectonic.exe</TectonicExe>
+  </PropertyGroup>
+
+  <Target Name="FetchTectonic" BeforeTargets="Build" Condition="'$(SkipTectonic)' != 'true' And !Exists('$(TectonicExe)')">
+    <MakeDir Directories="$(TectonicDir)" />
+    <DownloadFile SourceUrl="$(TectonicUrl)" DestinationFolder="$(TectonicDir)" DestinationFileName="tectonic.zip" Retries="2" ContinueOnError="WarnAndContinue" />
+    <PropertyGroup>
+      <_TectonicZip>$(TectonicDir)tectonic.zip</_TectonicZip>
+    </PropertyGroup>
+    <GetFileHash Files="$(_TectonicZip)" Algorithm="SHA256" Condition="Exists('$(_TectonicZip)') And '$(TectonicSha256)' != ''">
+      <Output TaskParameter="Hash" PropertyName="_TectonicHash" />
+    </GetFileHash>
+    <Delete Files="$(_TectonicZip)" Condition="Exists('$(_TectonicZip)') And ('$(TectonicSha256)' != '' And '$(_TectonicHash)' != '$(TectonicSha256)')" />
+    <Error Condition="'$(TectonicSha256)' != '' And '$(_TectonicHash)' != '' And '$(_TectonicHash)' != '$(TectonicSha256)'" Text="The Tectonic download does not match TectonicSha256; it was deleted." />
+    <Unzip SourceFiles="$(_TectonicZip)" DestinationFolder="$(TectonicDir)" Condition="Exists('$(_TectonicZip)')" />
+    <Delete Files="$(_TectonicZip)" />
+    <Warning Condition="!Exists('$(TectonicExe)')" Text="Tectonic could not be downloaded; PDF export will offer to download it when first used." />
+  </Target>
+
+  <Target Name="CopyTectonic" AfterTargets="Build" Condition="Exists('$(TectonicExe)')">
+    <Copy SourceFiles="$(TectonicExe)" DestinationFolder="$(OutDir)tools\tectonic" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="PublishTectonic" AfterTargets="Publish" Condition="Exists('$(TectonicExe)')">
+    <Copy SourceFiles="$(TectonicExe)" DestinationFolder="$(PublishDir)tools\tectonic" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
