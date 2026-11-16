@@ -62,6 +62,16 @@ public sealed class LocalBridgeServer : IDisposable
     public string? ConnectedGoogleDocTitle { get; private set; }
     public DateTimeOffset? LastPingUtc { get; private set; }
 
+    /// <summary>
+    /// Called (from a background thread) before a pull: the manuscript with edits made in the app but not yet
+    /// committed, or null when there are none. They are committed first, like a clean working tree before a
+    /// git pull, so the merge includes them and reloading the merged manuscript cannot discard them.
+    /// </summary>
+    public Func<ManuscriptDocument?>? UncommittedEditsProvider { get; set; }
+
+    /// <summary>How closely a committed version must match a Google Doc to be taken as the version it was made from.</summary>
+    private const double HistoryBaseThreshold = 0.6;
+
     public event Action<string>? BridgeActivityLogged;
     public event Action? SnapshotPulledFromGoogleDocs;
     public event Action? PatchAcknowledgedFromGoogleDocs;
@@ -254,6 +264,38 @@ public sealed class LocalBridgeServer : IDisposable
         return doc;
     }
 
+    /// <summary>Whether a Google Docs snapshot is of the same document and tab as a pull.</summary>
+    private static bool IsSameSource(ManuscriptDocument snapshot, ManuscriptDocument pulled)
+        => (snapshot.GoogleDocId == null || pulled.GoogleDocId == null || string.Equals(snapshot.GoogleDocId, pulled.GoogleDocId, StringComparison.Ordinal))
+            && (snapshot.GoogleDocTabId == null || pulled.GoogleDocTabId == null || string.Equals(snapshot.GoogleDocTabId, pulled.GoogleDocTabId, StringComparison.Ordinal));
+
+    /// <summary>
+    /// With no snapshot of this Google Doc (its first pull, or another document or tab), the committed version
+    /// it most resembles is taken as the version it was made from, as for a reviewed Word document, so edits made
+    /// here since are merged rather than replaced. Returns null when no version is close enough.
+    /// </summary>
+    private static (ManuscriptDocument? Base, string? Note) FindBaseInHistory(GitRepositoryService repo, ManuscriptDocument pulled)
+    {
+        var current = repo.LoadCurrentWorkingDocument();
+        if (current.Blocks.Count == 0)
+        {
+            return (null, null);
+        }
+        var best = ImportBaseDetector.Rank(pulled, repo.LoadProvenanceLedger(current.DocumentId).Blocks).FirstOrDefault();
+        if (best == null || best.Score < HistoryBaseThreshold)
+        {
+            return (null, "No earlier version of the manuscript matches this Google Doc, so its content replaced the manuscript (the previous version stays in the history).");
+        }
+        try
+        {
+            return (repo.LoadDocumentAtCommit(best.CommitSha), $"First pull of this document: merged against version {best.CommitSha[..7]} ({best.Score:P0} match), the version it was made from.");
+        }
+        catch (Exception)
+        {
+            return (null, null);
+        }
+    }
+
     public void RefreshPendingPatches()
     {
         var repo = _repoService;
@@ -420,11 +462,19 @@ public sealed class LocalBridgeServer : IDisposable
                 }
                 string tabNote = string.IsNullOrWhiteSpace(payload.TabTitle) ? string.Empty : $", tab '{payload.TabTitle}'";
 
+                var uncommitted = UncommittedEditsProvider?.Invoke();
+
                 string sha;
                 TextChainBlock block;
                 ManuscriptMergeResult? merge = null;
+                string? baseNote = null;
                 lock (repo.SyncRoot)
                 {
+                    if (uncommitted != null && repo.HasCommits())
+                    {
+                        repo.CommitSnapshot(uncommitted, "Edits in Revisions Editor before pulling from Google Docs");
+                    }
+
                     var toCommit = pulledDoc;
                     if (repo.HasCommits())
                     {
@@ -434,10 +484,18 @@ public sealed class LocalBridgeServer : IDisposable
                         // made here, or merged from another computer). Merge three ways against the version
                         // last seen in Google Docs so neither side's edits are lost.
                         var baseline = repo.LoadGoogleDocsBaseline();
+                        if (baseline != null && !IsSameSource(baseline, pulledDoc))
+                        {
+                            baseline = null; // a snapshot of another document or tab is not where this one started
+                        }
+                        if (baseline == null)
+                        {
+                            (baseline, baseNote) = FindBaseInHistory(repo, pulledDoc);
+                        }
                         if (baseline != null)
                         {
                             var current = CriticMarkupSerializer.BakeResolvedHunks(repo.LoadCurrentWorkingDocument(), acceptRemainingPending: false);
-                            merge = ManuscriptMerger.Merge(baseline, current, pulledDoc, "Google Docs");
+                            merge = ManuscriptMerger.Merge(baseline, current, pulledDoc, "Google Docs", trustParagraphIds: false);
                             toCommit = merge.Document;
                             toCommit.GoogleDocId = pulledDoc.GoogleDocId;
                             toCommit.GoogleDocTabId = pulledDoc.GoogleDocTabId;
@@ -455,6 +513,14 @@ public sealed class LocalBridgeServer : IDisposable
                         AuthorshipOriginSource.HandWrittenInGoogleDocs);
                 }
 
+                if (uncommitted != null)
+                {
+                    BridgeActivityLogged?.Invoke("Committed the edits made here before pulling from Google Docs, so they are merged rather than replaced.");
+                }
+                if (baseNote != null)
+                {
+                    BridgeActivityLogged?.Invoke($"Google Docs: {baseNote}");
+                }
                 RefreshPendingPatches();
                 string mergeNote = merge != null ? $" — {merge.Summary}" : string.Empty;
                 BridgeActivityLogged?.Invoke($"Pulled '{ConnectedGoogleDocTitle}'{tabNote} from Google Docs -> Commit {sha[..7]} (Block #{block.BlockIndex}){mergeNote}");

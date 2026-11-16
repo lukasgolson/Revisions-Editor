@@ -244,6 +244,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             Application.Current?.Dispatcher.BeginInvoke(() => _ = RefreshAfterExternalChangeAsync());
         };
+        // A pull merges with the edits made here; those not yet committed are handed over first, otherwise the
+        // reload after the pull would discard them.
+        _bridgeServer.UncommittedEditsProvider = () => Application.Current?.Dispatcher.Invoke(() =>
+        {
+            if (_repoService == null)
+            {
+                return null;
+            }
+            FlushPendingMarkdownSync();
+            return HasUncommittedChanges ? CriticMarkupSerializer.BakeResolvedHunks(_currentDocument, acceptRemainingPending: false) : null;
+        });
         _bridgeServer.PatchAcknowledgedFromGoogleDocs += () =>
         {
             Application.Current?.Dispatcher.BeginInvoke(() => GoogleDocPatches.ReplaceAll(_bridgeServer.GetPendingPatches()));
