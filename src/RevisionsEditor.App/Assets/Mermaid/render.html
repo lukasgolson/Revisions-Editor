@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Draws one Mermaid diagram at a time for Revisions Editor (in WebView2, offline). -->
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  #out { display: inline-block; padding: 8px; }
+  @page { margin: 0; }
+</style>
+<script src="mermaid.min.js"></script>
+</head>
+<body>
+<div id="out"></div>
+<script>
+  const config = {
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: 'neutral',
+    fontFamily: '"Times New Roman", "TeX Gyre Termes", serif',
+    // Natural size (the figure is scaled in the paper), and text drawn as SVG text, not HTML.
+    flowchart: { htmlLabels: false, useMaxWidth: false, curve: 'basis' },
+    sequence: { useMaxWidth: false },
+    gantt: { useMaxWidth: false, useWidth: 1100 },
+    class: { useMaxWidth: false },
+    state: { useMaxWidth: false },
+    er: { useMaxWidth: false },
+    timeline: { useMaxWidth: false },
+    pie: { useMaxWidth: false }
+  };
+  mermaid.initialize(config);
+  let count = 0;
+  async function draw(code) {
+    const out = document.getElementById('out');
+    try {
+      const { svg } = await mermaid.render('diagram' + (++count), code);
+      out.innerHTML = svg;
+      const r = out.getBoundingClientRect();
+      chrome.webview.postMessage({ ok: true, width: Math.ceil(r.width), height: Math.ceil(r.height) });
+    } catch (e) {
+      // Mermaid leaves an error drawing in the page; the message says what is wrong.
+      for (const stray of document.querySelectorAll('body > [id^="ddiagram"]')) stray.remove();
+      chrome.webview.postMessage({ ok: false, error: String((e && e.message) || e) });
+    }
+  }
+  window.draw = draw;
+  chrome.webview.postMessage({ ready: true });
+</script>
+</body>
+</html>

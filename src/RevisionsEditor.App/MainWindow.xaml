@@ -134,6 +134,7 @@
                 <Separator/>
                 <MenuItem Command="app:AppCommands.InsertFigure" Header="_Figure..."/>
                 <MenuItem Command="app:AppCommands.InsertDiagram" Header="_Diagram..."/>
+                <MenuItem Command="app:AppCommands.InsertMermaid" Header="_Mermaid Diagram (flowchart, Gantt)..."/>
                 <MenuItem Command="app:AppCommands.InsertTable" Header="_Table..."/>
                 <MenuItem Command="app:AppCommands.InsertEquation" Header="_Equation..."/>
                 <Separator/>
@@ -382,6 +383,7 @@
                                         <Button Content="Number" Command="app:AppCommands.InsertNumber" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a number linked to the analysis results (Ctrl+Alt+N)"/>
                                         <Button Content="Figure" Command="app:AppCommands.InsertFigure" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a figure (Ctrl+Alt+F)"/>
                                         <Button Content="Diagram" Command="app:AppCommands.InsertDiagram" Focusable="False" Margin="4,0,0,0" ToolTip="Draw a block diagram: a pipeline or a network architecture (Ctrl+Alt+G)"/>
+                                        <Button Content="Mermaid" Command="app:AppCommands.InsertMermaid" Focusable="False" Margin="4,0,0,0" ToolTip="A Mermaid diagram: flowchart, Gantt chart, sequence diagram… (Ctrl+Alt+K)"/>
                                         <Button Content="Table" Command="app:AppCommands.InsertTable" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a table from a CSV file (Ctrl+Alt+T)"/>
                                         <Button Content="Equation" Command="app:AppCommands.InsertEquation" Focusable="False" Margin="4,0,0,0" ToolTip="Insert an equation (Ctrl+Alt+Q)"/>
                                         <ToggleButton x:Name="PreviewToggle" Content="Preview" Focusable="False" Margin="10,0,0,0"
@@ -883,6 +885,7 @@
                                         <TextBlock Style="{StaticResource SecondaryText}" FontWeight="SemiBold" Text="Figures, tables and equations" Margin="4,0,12,0"/>
                                         <Button Content="Figure..." Command="app:AppCommands.InsertFigure"/>
                                         <Button Content="Diagram..." Command="app:AppCommands.InsertDiagram" Margin="6,0,0,0"/>
+                                        <Button Content="Mermaid..." Command="app:AppCommands.InsertMermaid" Margin="6,0,0,0"/>
                                         <Button Content="Table..." Command="app:AppCommands.InsertTable" Margin="6,0,0,0"/>
                                         <Button Content="Equation..." Command="app:AppCommands.InsertEquation" Margin="6,0,0,0"/>
                                         <Button Content="Edit" Command="app:AppCommands.EditScholarlyItem" CommandParameter="{Binding SelectedItem, ElementName=NumberedItemsGrid}" Margin="12,0,0,0"/>

@@ -22,6 +22,13 @@
     <PackageReference Include="Dirkster.AvalonDock" Version="5.0.1" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="5.0.1" />
     <PackageReference Include="Dirkster.AvalonDock.Serializer.Xml" Version="5.0.1" />
+    <!-- Mermaid diagrams are drawn by Mermaid itself in the Edge WebView2 runtime (part of Windows 11) and saved as PDF. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Mermaid 12.3.0 (MIT), bundled so diagrams draw offline and the same everywhere. -->
+    <None Include="Assets\Mermaid\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--

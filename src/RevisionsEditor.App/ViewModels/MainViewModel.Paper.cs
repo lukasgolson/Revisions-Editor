@@ -119,6 +119,16 @@ public sealed partial class MainViewModel
         return (path, svg);
     }
 
+    /// <summary>Saves a Mermaid figure's source and the PDF Mermaid drew (from a temporary file, which is removed).</summary>
+    public (string SourcePath, string PdfPath) SaveMermaid(string? sourcePath, string? label, string source, string pdfFile)
+    {
+        RequireWorkspace();
+        var saved = Core.Diagrams.MermaidFiles.Save(WorkspacePath, sourcePath, label, source, pdfFile);
+        try { File.Delete(pdfFile); } catch (IOException) { }
+        MarkProjectFilesChanged();
+        return saved;
+    }
+
     /// <summary>Copies a file into a folder of the workspace (unless it is already there) and returns its relative path.</summary>
     public string CopyIntoWorkspace(string sourcePath, string folder)
     {
