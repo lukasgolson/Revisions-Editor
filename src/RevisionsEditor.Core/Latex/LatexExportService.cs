@@ -216,6 +216,7 @@ public static class LatexExportService
         private readonly StringBuilder _body = new();
         private readonly bool _twoColumn;
         private bool _referencesWritten;
+        private bool _usesTikz;
 
         public Writer(ManuscriptDocument doc, ScholarlyContext context, FormattingRuleProfile profile, LatexExportOptions options)
         {
@@ -327,7 +328,12 @@ public static class LatexExportService
             // engine inside Tectonic, supports protrusion only.
             tex.AppendLine(@"\ifLuaTeX\usepackage[protrusion=true,expansion=true,tracking=true,final]{microtype}\else\usepackage[protrusion=true,final]{microtype}\fi");
             tex.AppendLine(@"\usepackage{graphicx}");
+            if (_usesTikz)
+            {
+                tex.AppendLine(@"\usepackage{tikz}"); // diagrams drawn from .diagram files
+            }
             tex.AppendLine(@"\usepackage{booktabs}");
+            tex.AppendLine(@"\usepackage{tabularx}"); // tables whose text columns wrap to fit
             tex.AppendLine(@"\usepackage{adjustbox}");
             // Numbers in table columns aligned on the decimal point.
             tex.AppendLine(@"\usepackage{siunitx}");
@@ -742,8 +748,10 @@ public static class LatexExportService
                 return;
             }
             string source = ResolveFile(figure.ImagePath);
-            string? included = File.Exists(source) ? IncludeFigureFile(source, figure.ImagePath) : null;
-            if (!File.Exists(source))
+            // A diagram is drawn from its source as TikZ, so TeX typesets its labels and math itself.
+            string? diagram = Diagrams.DiagramFiles.SourceOf(figure) is { } d && File.Exists(ResolveFile(d)) ? IncludeDiagram(ResolveFile(d), d) : null;
+            string? included = diagram == null && File.Exists(source) ? IncludeFigureFile(source, figure.ImagePath) : null;
+            if (diagram == null && !File.Exists(source))
             {
                 _warnings.Add($"The image {figure.ImagePath} is missing.");
             }
@@ -764,13 +772,21 @@ public static class LatexExportService
             _body.AppendLine($@"\begin{{{environment}}}[{(wide ? "tp" : "tbp")}]");
             _body.AppendLine(@"\centering");
             string? placeholder = DraftPlaceholders.NoteOf(figure.Attributes);
-            string graphic = $@"\includegraphics[width={width},height={(wide ? "0.5" : "0.45")}\textheight,keepaspectratio]{{{included}}}";
-            _body.AppendLine(included != null
+            string graphic = diagram != null
+                ? $@"\adjustbox{{width={width},max totalheight={(wide ? "0.5" : "0.45")}\textheight}}{{\input{{{diagram}}}}}"
+                : $@"\includegraphics[width={width},height={(wide ? "0.5" : "0.45")}\textheight,keepaspectratio]{{{included}}}";
+            _body.AppendLine(included != null || diagram != null
                 ? (placeholder != null ? $@"\placeholderstamp{{{graphic}}}" : graphic)
                 : $@"\fbox{{\parbox{{0.8\linewidth}}{{\centering\small Image {Escape(figure.ImagePath)} is missing.}}}}");
-            _body.AppendLine($@"\caption{{{PlaceholderCaption(placeholder)}{Inline(figure.Caption)}}}{(figure.Label != null ? $@"\label{{{figure.Label}}}" : string.Empty)}");
+            _body.AppendLine($@"\caption{{{PlaceholderCaption(placeholder)}{CaptionText(figure.Caption)}}}{(figure.Label != null ? $@"\label{{{figure.Label}}}" : string.Empty)}");
             _body.AppendLine($@"\end{{{environment}}}").AppendLine();
         }
+
+        /// <summary>
+        /// A caption's text. Captions are moving arguments (written to the .aux and list of figures), where hyperref's
+        /// citation links must be protected or LaTeX stops with "Argument of \caption@ydblarg has an extra }".
+        /// </summary>
+        private string CaptionText(string caption) => Inline(caption).Replace(@"\hyperlink{", @"\protect\hyperlink{");
 
         /// <summary>"[Placeholder: synthetic data] " before the caption of a figure or table that is one.</summary>
         private static string PlaceholderCaption(string? note)
@@ -796,6 +812,26 @@ public static class LatexExportService
             string staging = Path.Combine(Path.GetTempPath(), "RevisionsEditor-latex-images");
             Directory.CreateDirectory(staging);
             return staging;
+        }
+
+        /// <summary>
+        /// A diagram as a TikZ file in the output (figures/&lt;name&gt;.tikz), or null (with a warning) when its source
+        /// cannot be read, in which case the figure's SVG is used.
+        /// </summary>
+        private string? IncludeDiagram(string sourcePath, string shownPath)
+        {
+            var parsed = Diagrams.DiagramSource.Parse(File.ReadAllText(sourcePath), out var errors);
+            if (errors.Count > 0)
+            {
+                _warnings.Add($"{shownPath} has errors (line {errors[0].Line}: {errors[0].Message}); its drawing was used instead.");
+                return null;
+            }
+            string staged = Path.Combine(StagingFolder(), $"{Path.GetFileNameWithoutExtension(sourcePath)}-{Guid.NewGuid():N}.tikz");
+            File.WriteAllText(staged, Diagrams.DiagramRenderer.ToTikz(parsed));
+            string included = FigurePath(Path.GetFileNameWithoutExtension(sourcePath) + ".tikz", staged);
+            _files.Add((staged, included));
+            _usesTikz = true;
+            return included;
         }
 
         /// <summary>A figure path in the output that no other figure uses (two figures may share a file name).</summary>
@@ -882,8 +918,6 @@ public static class LatexExportService
             }
 
             int columns = rows.Count == 0 ? 1 : rows.Max(r => r.Length);
-            bool wide = _twoColumn && columns >= 5;
-            string environment = wide ? "table*" : "table";
             var values = Enumerable.Range(0, columns)
                 .Select(c => rows.Skip(1).Select(r => c < r.Length ? r[c].Trim().Replace(Minus, "-") : string.Empty).Where(v => v.Length > 0).ToList())
                 .ToArray();
@@ -895,14 +929,30 @@ public static class LatexExportService
                 .Select(c => numeric[c] && values[c].Count > 0 && values[c].All(v => PlainDecimalRegex.IsMatch(v)) ? TableFormat(values[c]) : null)
                 .ToArray();
 
+            // Sized by its content: at its natural width in a column if it fits there, across both columns if it
+            // fits the page, and otherwise with its text columns wrapping (tabularx), across the page when a single
+            // column would make them too narrow. span=full or span=column decides it instead.
+            var size = TableSizing.Plan(rows.Select(r => r.Select(cell => PlainCellText(cell)).ToArray()).ToList(), numeric, Template, _twoColumn,
+                table.Attributes.GetValueOrDefault("span"));
+            bool wide = size.Wide;
+            string environment = wide ? "table*" : "table";
+
             _body.AppendLine($@"\begin{{{environment}}}[tbp]");
             _body.AppendLine(@"\centering");
-            _body.AppendLine($@"\caption{{{PlaceholderCaption(DraftPlaceholders.NoteOf(table.Attributes))}{Inline(table.Caption)}}}{(table.Label != null ? $@"\label{{{table.Label}}}" : string.Empty)}");
+            _body.AppendLine($@"\caption{{{PlaceholderCaption(DraftPlaceholders.NoteOf(table.Attributes))}{CaptionText(table.Caption)}}}{(table.Label != null ? $@"\label{{{table.Label}}}" : string.Empty)}");
             if (rows.Count > 0)
             {
-                _body.AppendLine($@"\begin{{adjustbox}}{{max width=\{(wide ? "textwidth" : "linewidth")}}}");
+                string widthMacro = wide ? @"\textwidth" : @"\linewidth";
+                string Spec(int i) => size.WrapShare[i] is { } share
+                    ? $@">{{\raggedright\arraybackslash\hsize={share.ToString("0.###", CultureInfo.InvariantCulture)}\hsize}}X"
+                    : i == 0 ? "l" : decimals[i] is { } format ? $"S[table-format={format}]" : numeric[i] ? "r" : "c";
+                string spec = string.Concat(Enumerable.Range(0, columns).Select(Spec));
+                // Still a safety net: a table wider than the page even with wrapping is scaled to fit.
+                _body.AppendLine($@"\begin{{adjustbox}}{{max width={widthMacro}}}");
                 _body.AppendLine(@"\small");
-                _body.AppendLine(@"\begin{tabular}{" + string.Concat(numeric.Select((n, i) => i == 0 ? "l" : decimals[i] is { } format ? $"S[table-format={format}]" : n ? "r" : "c")) + "}");
+                _body.AppendLine(size.Wraps
+                    ? $@"\begin{{tabularx}}{{{widthMacro}}}{{{spec}}}"
+                    : @"\begin{tabular}{" + spec + "}");
                 _body.AppendLine(@"\toprule");
                 for (int r = 0; r < rows.Count; r++)
                 {
@@ -925,11 +975,16 @@ public static class LatexExportService
                     }
                 }
                 _body.AppendLine(@"\bottomrule");
-                _body.AppendLine(@"\end{tabular}");
+                _body.AppendLine(size.Wraps ? @"\end{tabularx}" : @"\end{tabular}");
                 _body.AppendLine(@"\end{adjustbox}");
             }
             _body.AppendLine($@"\end{{{environment}}}").AppendLine();
         }
+
+        /// <summary>A cell as it prints (citations, numbers and cross-references rendered), for measuring.</summary>
+        private string PlainCellText(string cell)
+            => string.Concat(_context.Tokenize(cell.Trim()).Select(p => p.Kind == InlinePieceKind.Math ? p.Detail ?? string.Empty : p.Display))
+                .Replace("**", string.Empty).Replace("*", string.Empty);
 
         private void WriteEquation(DocumentBlock block, string text)
         {

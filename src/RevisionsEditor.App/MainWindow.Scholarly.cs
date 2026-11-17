@@ -5,6 +5,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using RevisionsEditor.App.Dialogs;
 using RevisionsEditor.App.Rendering;
@@ -50,6 +52,8 @@ public partial class MainWindow
         Bind(AppCommands.InsertNumber, _ => InsertNumber(), workspace);
         Bind(AppCommands.InsertFigure, _ => EditFigure(null), workspace);
         Bind(AppCommands.InsertTable, _ => EditTable(null), workspace);
+        Bind(AppCommands.InsertDiagram, _ => EditDiagram(null), workspace);
+        Bind(AppCommands.InsertMermaid, _ => EditMermaid(null), workspace);
         Bind(AppCommands.InsertEquation, _ => EditEquation(null), workspace);
         Bind(AppCommands.EditScholarlyItem, p => EditScholarlyBlock(((NumberedItem)p!).ParagraphId), p => p is NumberedItem);
         Bind(AppCommands.RemoveScholarlyItem, p => RemoveScholarlyItem((NumberedItem)p!), p => p is NumberedItem);
@@ -301,6 +305,16 @@ public partial class MainWindow
     private void EditFigure(DocumentBlock? existing)
     {
         var current = existing != null ? ScholarlyBlocks.ParseFigure(FinalText(existing)) : null;
+        if (current != null && Core.Diagrams.DiagramFiles.SourceOf(current) != null)
+        {
+            EditDiagram(existing);
+            return;
+        }
+        if (current != null && Core.Diagrams.MermaidFiles.SourceOf(current) != null)
+        {
+            EditMermaid(existing);
+            return;
+        }
         var labels = ExistingLabels();
         if (current?.Label != null)
         {
@@ -335,6 +349,110 @@ public partial class MainWindow
                 ShowEditorNotice($"Figure added. Refer to it in the text as @{dialog.Label}.");
             }
         }, "Figure");
+    }
+
+    /// <summary>
+    /// Draws a block diagram for a figure, or edits one: its source is figures/&lt;label&gt;.diagram (named by the
+    /// figure's source= attribute) and the figure shows the SVG drawn from it.
+    /// </summary>
+    private void EditDiagram(DocumentBlock? existing, string? convertedSource = null, FigureBlock? convertedFigure = null)
+    {
+        var current = convertedFigure ?? (existing != null ? ScholarlyBlocks.ParseFigure(FinalText(existing)) : null);
+        string? sourcePath = current != null ? Core.Diagrams.DiagramFiles.SourceOf(current) : null;
+        string? source = convertedSource;
+        if (sourcePath != null && source == null)
+        {
+            string full = Path.Combine(ViewModel.WorkspacePath, sourcePath.Replace('/', Path.DirectorySeparatorChar));
+            source = File.Exists(full) ? File.ReadAllText(full) : null;
+        }
+        var labels = ExistingLabels();
+        if (current?.Label != null)
+        {
+            labels.Remove(current.Label);
+        }
+        string? after = existing == null ? CaretBlockId() : null;
+        var dialog = new DiagramEditorDialog(current, source, labels) { Owner = this };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        Run(() =>
+        {
+            var (diagramPath, svgPath) = ViewModel.SaveDiagram(sourcePath, dialog.Label, dialog.Source);
+            var attributes = new Dictionary<string, string>(current?.Attributes ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
+            {
+                ["source"] = diagramPath
+            };
+            string text = ScholarlyBlocks.FormatFigure(dialog.Caption, svgPath, dialog.Label, attributes);
+            if (existing != null)
+            {
+                ViewModel.ReplaceBlockText(existing.ParagraphId, text);
+            }
+            else
+            {
+                ViewModel.InsertBlock(new DocumentBlock { ParagraphId = ViewModel.NewParagraphId(), Role = BlockStyleRole.Figure, Text = text }, after);
+                ShowEditorNotice($"Diagram added as a figure. Refer to it in the text as @{dialog.Label}; double-click it to edit the diagram.");
+            }
+        }, "Diagram");
+    }
+
+    /// <summary>
+    /// A Mermaid figure (flowchart, Gantt chart, sequence diagram…), drawn by Mermaid and saved as a PDF with its
+    /// source figures/&lt;label&gt;.mmd; or a flowchart converted into an editable diagram.
+    /// </summary>
+    private void EditMermaid(DocumentBlock? existing)
+    {
+        if (!MermaidView.IsAvailable)
+        {
+            MessageBox.Show(this, "Mermaid diagrams need the Microsoft Edge WebView2 Runtime, which is part of Windows 11 (and can be installed from Microsoft for Windows 10).",
+                "Mermaid Diagram", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var current = existing != null ? ScholarlyBlocks.ParseFigure(FinalText(existing)) : null;
+        string? sourcePath = current != null ? Core.Diagrams.MermaidFiles.SourceOf(current) : null;
+        string? source = null;
+        if (sourcePath != null)
+        {
+            string full = Path.Combine(ViewModel.WorkspacePath, sourcePath.Replace('/', Path.DirectorySeparatorChar));
+            source = File.Exists(full) ? File.ReadAllText(full) : null;
+        }
+        var labels = ExistingLabels();
+        if (current?.Label != null)
+        {
+            labels.Remove(current.Label);
+        }
+        string? after = existing == null ? CaretBlockId() : null;
+        var dialog = new MermaidDialog(current, source, labels) { Owner = this };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        if (dialog.ConvertedDiagram != null)
+        {
+            // Continue in the diagram editor, with the caption and label given here.
+            var seed = new FigureBlock(dialog.Caption, string.Empty, dialog.Label,
+                current?.Attributes.Where(a => !a.Key.Equals("source", StringComparison.OrdinalIgnoreCase)).ToDictionary(a => a.Key, a => a.Value) ?? []);
+            EditDiagram(existing, dialog.ConvertedDiagram, seed);
+            return;
+        }
+        Run(() =>
+        {
+            var (mmdPath, pdfPath) = ViewModel.SaveMermaid(sourcePath, dialog.Label, dialog.Source, dialog.PdfPath!);
+            var attributes = new Dictionary<string, string>(current?.Attributes ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
+            {
+                ["source"] = mmdPath
+            };
+            string text = ScholarlyBlocks.FormatFigure(dialog.Caption, pdfPath, dialog.Label, attributes);
+            if (existing != null)
+            {
+                ViewModel.ReplaceBlockText(existing.ParagraphId, text);
+            }
+            else
+            {
+                ViewModel.InsertBlock(new DocumentBlock { ParagraphId = ViewModel.NewParagraphId(), Role = BlockStyleRole.Figure, Text = text }, after);
+                ShowEditorNotice($"Mermaid diagram added as a figure. Refer to it in the text as @{dialog.Label}; double-click it to edit.");
+            }
+        }, "Mermaid diagram");
     }
 
     /// <summary>Marks a figure or table as a placeholder (placeholder="note"), or as the real one.</summary>
@@ -455,8 +573,31 @@ public partial class MainWindow
             scholarly: Paper.Context, workspacePath: ViewModel.WorkspacePath, preview: true,
             onFrontMatterActivated: () => Dispatcher.BeginInvoke(OpenTitlePageForm));
         var margins = document.PagePadding;
+        // Only the blocks that changed are replaced; otherwise (a new document) keep the reader where they were.
+        PageReconciler.WorkspacePath = ViewModel.WorkspacePath;
+        if (PreviewViewer.Document is { Blocks.Count: > 0 } live && live != document && PageReconciler.TryUpdate(live, document, out _))
+        {
+            return;
+        }
+        var scroller = Descendant<ScrollViewer>(PreviewViewer);
+        double? offset = scroller?.VerticalOffset;
         PreviewViewer.Document = document;
         document.PagePadding = margins;
+        if (offset is > 0)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => Descendant<ScrollViewer>(PreviewViewer)?.ScrollToVerticalOffset(offset.Value));
+        }
+    }
+
+    private static T? Descendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T found) return found;
+            if (Descendant<T>(child) is { } deeper) return deeper;
+        }
+        return null;
     }
 
     // ---- Checks ---------------------------------------------------------------------------------

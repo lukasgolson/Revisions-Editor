@@ -12,6 +12,8 @@
   "use strict";
 
   const DOCS_API = "https://docs.googleapis.com/v1/documents";
+  const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+  const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
   const OBJECT_PLACEHOLDER = "\uFFFC"; // stands in for images and other non-text elements
   const LEADING_SECTION_NUMBER = /^\d+(\.\d+)*\.?\s+/;
   const NAMED_STYLE_BY_ROLE = {
@@ -285,6 +287,28 @@
   }
 
   /**
+   * The images of a tab in document order, as tabToBlocks reads them: { objectId, index, widthPt, positioned }.
+   * The app numbers the Google Doc's figures in this order (ImageOrdinal).
+   */
+  function imagesOf(tab) {
+    const images = [];
+    for (const element of (tab.body && tab.body.content) || []) {
+      if (!element.paragraph) continue;
+      for (const part of element.paragraph.elements || []) {
+        const id = part.inlineObjectElement && part.inlineObjectElement.inlineObjectId;
+        if (id && imageOf(tab.inlineObjects, id, "inlineObjectProperties")) {
+          const size = tab.inlineObjects[id].inlineObjectProperties.embeddedObject.size;
+          images.push({ objectId: id, index: part.startIndex, widthPt: size && size.width && size.width.magnitude, positioned: false });
+        }
+      }
+      for (const id of element.paragraph.positionedObjectIds || []) {
+        if (imageOf(tab.positionedObjects, id, "positionedObjectProperties")) images.push({ objectId: id, positioned: true });
+      }
+    }
+    return images;
+  }
+
+  /**
    * Turns patches into Docs API requests against `doc`.
    * Returns { requests, results } where results has one { patchId, ok, message } per patch.
    */
@@ -294,6 +318,7 @@
       throw new Error("The selected document tab no longer exists. Choose a tab and try again.");
     }
     const paragraphs = collectParagraphs(tab.body && tab.body.content);
+    const images = imagesOf(tab);
     const bodyParagraphs = paragraphs.filter((p) => !p.inTable);
     const lastBodyParagraph = bodyParagraphs[bodyParagraphs.length - 1];
     const used = new Set();
@@ -396,6 +421,44 @@
             order,
             patchId: patch.patchId
           });
+        } else if (kind === "replaceimage") {
+          // The new image goes where the old one is, at its width; then the old one (now one place on) goes.
+          const image = images[patch.imageOrdinal];
+          if (!image) throw new Error("This figure's image was not found in Google Docs (it may have been removed). Insert it manually.");
+          if (image.positioned) throw new Error("This figure's image is positioned on the page rather than in the text; replace it manually.");
+          if (!patch.imageUri) throw new Error(patch.imageError || "The figure could not be sent.");
+          const width = image.widthPt || patch.imageWidthPt;
+          ops.push({
+            index: image.index,
+            priority: 0,
+            order,
+            patchIds: [patch.patchId],
+            requests: [
+              { insertInlineImage: { location: { index: image.index }, uri: patch.imageUri, objectSize: { width: { magnitude: width, unit: "PT" } } } },
+              { deleteContentRange: { range: { startIndex: image.index + 1, endIndex: image.index + 2 } } }
+            ]
+          });
+        } else if (kind === "insertimage") {
+          if (!patch.imageUri) throw new Error(patch.imageError || "The figure could not be sent.");
+          const anchor = patch.anchorText ? findParagraph(patch.anchorText, { claim: false, preferBefore: true }) : bodyParagraphs[0];
+          if (!anchor) throw new Error("The paragraph this figure follows was not found in Google Docs. Insert it manually.");
+          if (anchor.inTable) throw new Error("Figures cannot be added inside tables automatically. Insert it manually.");
+          // A paragraph with the image, then one with the caption, after the anchor (or at the very start).
+          const caption = singleLine(patch.afterText);
+          const atEnd = anchor === lastBodyParagraph || anchor.beforeStructure;
+          const first = !patch.anchorText;
+          const at = first ? anchor.start : atEnd ? anchor.end - 1 : anchor.end;
+          const requests = first || !atEnd
+            ? [
+                { insertText: { location: { index: at }, text: caption + "\n" } },
+                { insertText: { location: { index: at }, text: "\n" } },
+                { insertInlineImage: { location: { index: at }, uri: patch.imageUri, objectSize: { width: { magnitude: patch.imageWidthPt, unit: "PT" } } } }
+              ]
+            : [
+                { insertText: { location: { index: at }, text: "\n\n" + caption } },
+                { insertInlineImage: { location: { index: at + 1 }, uri: patch.imageUri, objectSize: { width: { magnitude: patch.imageWidthPt, unit: "PT" } } } }
+              ];
+          ops.push({ index: at, priority: 1, order, patchIds: [patch.patchId], requests });
         } else {
           throw new Error(`Unknown change type '${patch.kind}'.`);
         }
@@ -513,6 +576,7 @@
         if (tab.tabId) {
           for (const body of Object.values(request)) {
             if (body.location) body.location.tabId = tab.tabId;
+            if (body.imageObjectId !== undefined && !body.location) body.tabId = tab.tabId;
             if (body.range) body.range.tabId = tab.tabId;
           }
         }
@@ -702,8 +766,79 @@
    * produced it is set aside with Google's reason and the rest are planned again against a fresh copy of the
    * document, so one change Google will not accept never blocks the others.
    */
-  async function applyPatches({ token, documentId, tabId = null, patches, fetchImpl = fetch }) {
+  /**
+   * Puts an image in the user's Google Drive and shares it by link for a moment: Google Docs only inserts images
+   * from an address it can fetch. Returns { id, uri }; the file is deleted once the document has the image (it
+   * keeps its own copy). Needs the drive.file permission (files this extension creates, nothing else).
+   */
+  async function uploadImage({ token, bytes, contentType, name, fetchImpl = fetch }) {
     const headers = { Authorization: `Bearer ${token}` };
+    const boundary = "revisions-editor-" + Math.random().toString(36).slice(2);
+    const metadata = JSON.stringify({ name, mimeType: contentType });
+    const body = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
+      `--${boundary}\r\nContent-Type: ${contentType}\r\n\r\n`,
+      bytes,
+      `\r\n--${boundary}--`
+    ]);
+    const created = await fetchImpl(`${DRIVE_UPLOAD}?uploadType=multipart&fields=id`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": `multipart/related; boundary=${boundary}` },
+      body
+    });
+    if (created.status === 401 || created.status === 403) {
+      throw new AuthError("Sending figures needs permission to add files to your Google Drive (only files this extension creates). Sign in again to allow it.");
+    }
+    if (!created.ok) throw new Error(`The figure could not be uploaded to Google Drive (${await readError(created)}).`);
+    const { id } = await created.json();
+    const shared = await fetchImpl(`${DRIVE_API}/${encodeURIComponent(id)}/permissions`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "reader", type: "anyone" })
+    });
+    if (!shared.ok) {
+      await deleteImage({ token, id, fetchImpl });
+      throw new Error(`The figure could not be shared for Google Docs to fetch it (${await readError(shared)}).`);
+    }
+    return { id, uri: `https://drive.google.com/uc?export=download&id=${encodeURIComponent(id)}` };
+  }
+
+  async function deleteImage({ token, id, fetchImpl = fetch }) {
+    try {
+      await fetchImpl(`${DRIVE_API}/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    } catch {
+      // Left in Drive (shared by link only); harmless, and listed under the extension's files there.
+    }
+  }
+
+  async function applyPatches({ token, documentId, tabId = null, patches, fetchImpl = fetch, imageSource = null }) {
+    const headers = { Authorization: `Bearer ${token}` };
+    // Figures: their images go to Drive first, so the requests can refer to them.
+    patches = patches.map((p) => ({ ...p }));
+    const uploaded = [];
+    for (const patch of patches.filter((p) => /image$/i.test(String(p.kind)))) {
+      try {
+        if (!imageSource) throw new Error("Figures cannot be sent from here.");
+        const image = await imageSource(patch);
+        const file = await uploadImage({ token, bytes: image.bytes, contentType: image.contentType, name: `Revisions Editor figure (${patch.patchId})`, fetchImpl });
+        uploaded.push(file.id);
+        patch.imageUri = file.uri;
+      } catch (err) {
+        if (err instanceof AuthError) {
+          for (const id of uploaded) await deleteImage({ token, id, fetchImpl });
+          throw err;
+        }
+        patch.imageError = err.message;
+      }
+    }
+    try {
+      return await applyPlanned({ headers, documentId, tabId, patches, fetchImpl });
+    } finally {
+      for (const id of uploaded) await deleteImage({ token, id, fetchImpl });
+    }
+  }
+
+  async function applyPlanned({ headers, documentId, tabId, patches, fetchImpl }) {
     const rejected = new Map(); // patchId -> reason
     let remaining = patches.slice();
     let results = [];
@@ -770,6 +905,8 @@
 
   root.DocsApply = {
     applyPatches,
+    uploadImage,
+    imagesOf,
     listTabs,
     readTabBlocks,
     flattenTabs,

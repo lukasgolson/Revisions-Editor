@@ -397,17 +397,10 @@ public static class DiffEngineService
         var baseSections = SectionHeadings(baseBlocks, googleDocsBaseline.Title);
         var mergedSections = SectionHeadings(mergedBlocks, mergedMainDoc.Title);
 
-        int n = baseKeys.Count, m = mergedKeys.Count, width = m + 1;
-        int[] dp = new int[(n + 1) * width];
-        for (int i = n - 1; i >= 0; i--)
-        {
-            for (int j = m - 1; j >= 0; j--)
-            {
-                dp[i * width + j] = baseKeys[i] == mergedKeys[j]
-                    ? 1 + dp[(i + 1) * width + j + 1]
-                    : Math.Max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
-            }
-        }
+        // The same alignment the merge uses: unchanged paragraphs by content, edited ones by similarity.
+        int n = baseKeys.Count, m = mergedKeys.Count;
+        int[] match = Merging.ManuscriptMerger.Align(baseBlocks, mergedBlocks, trustParagraphIds: false);
+        var matchedFrom = new HashSet<int>(match.Where(j => j >= 0));
 
         var patches = new List<GoogleDocPatch>();
         var usedIds = new HashSet<string>(StringComparer.Ordinal);
@@ -479,20 +472,29 @@ public static class DiffEngineService
         int x = 0, y = 0;
         while (x < n || y < m)
         {
-            if (x < n && y < m && baseKeys[x] == mergedKeys[y])
+            if (x < n && y < m && match[x] == y && baseKeys[x] == mergedKeys[y])
             {
                 FlushRun();
                 anchor = baseTexts[x];
                 x++;
                 y++;
             }
-            else if (y >= m || (x < n && dp[(x + 1) * width + y] >= dp[x * width + y + 1]))
+            else if (x < n && match[x] < 0)
             {
                 removedRun.Add(x++);
             }
-            else
+            else if (y < m && !matchedFrom.Contains(y))
             {
                 addedRun.Add(y++);
+            }
+            else
+            {
+                // An edited paragraph paired with its earlier version.
+                FlushRun();
+                AddPatch(GoogleDocPatchKind.Modify, mergedBlocks[y], mergedSections[y], baseTexts[x], mergedTexts[y], string.Empty);
+                anchor = baseTexts[x];
+                x++;
+                y++;
             }
         }
         FlushRun();

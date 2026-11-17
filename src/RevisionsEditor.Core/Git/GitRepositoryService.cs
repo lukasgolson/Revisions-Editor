@@ -8,6 +8,8 @@ using RevisionsEditor.Core.Models;
 using RevisionsEditor.Core.Provenance;
 using RevisionsEditor.Core.Serialization;
 using RevisionsEditor.Core.Storage;
+using LibGit2Sharp; // extension methods (Lookup<T>, CreateBranch); its types are written Git2.X
+using Git2 = LibGit2Sharp;
 
 namespace RevisionsEditor.Core.Git;
 
@@ -106,21 +108,21 @@ public sealed class GitRepositoryService
 
         if (!Directory.Exists(Path.Combine(WorkspacePath, ".git")))
         {
-            RunGit(["init", "-b", "main"]);
+            Git2.Repository.Init(WorkspacePath);
+            WithRepo(r => r.Refs.UpdateTarget("HEAD", "refs/heads/main"));
         }
 
-        // Read the identity in one process (each git launch is expensive on Windows) and only fill in
-        // values Git does not have, so commits never fail on a fresh machine.
+        // Only fill in values Git does not have, so commits never fail on a fresh machine.
         var (name, email) = ReadGitIdentity();
         if (name == null)
         {
             name = Environment.UserName;
-            RunGit(["config", "user.name", name]);
+            WithRepo(r => r.Config.Set("user.name", name));
         }
         if (email == null)
         {
             email = $"{Environment.UserName}@{Environment.MachineName}";
-            RunGit(["config", "user.email", email]);
+            WithRepo(r => r.Config.Set("user.email", email));
         }
         _authorName = name;
         _authorEmail = email;
@@ -129,34 +131,11 @@ public sealed class GitRepositoryService
         _initialized = true;
     }
 
-    private (string? Name, string? Email) ReadGitIdentity()
+    private (string? Name, string? Email) ReadGitIdentity() => WithRepo(r =>
     {
-        var (_, stdout) = RunGit(["config", "--get-regexp", @"^user\.(name|email)$"], throwOnError: false);
-        string? name = null, email = null;
-        foreach (string line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            int space = line.IndexOf(' ');
-            if (space <= 0)
-            {
-                continue;
-            }
-            string key = line[..space];
-            string value = line[(space + 1)..].Trim();
-            if (value.Length == 0)
-            {
-                continue;
-            }
-            if (string.Equals(key, "user.name", StringComparison.OrdinalIgnoreCase))
-            {
-                name = value;
-            }
-            else if (string.Equals(key, "user.email", StringComparison.OrdinalIgnoreCase))
-            {
-                email = value;
-            }
-        }
-        return (name, email);
-    }
+        static string? Value(Git2.ConfigurationEntry<string>? entry) => entry?.Value is { } v && v.Trim().Length > 0 ? v.Trim() : null;
+        return (Value(r.Config.Get<string>("user.name")), Value(r.Config.Get<string>("user.email")));
+    });
 
     private void EnsureAuthorKeyIsIgnored()
     {
@@ -177,22 +156,14 @@ public sealed class GitRepositoryService
     public bool HasCommits()
     {
         EnsureInitialized();
-        var (code, _) = RunGit(["rev-parse", "--verify", "--quiet", "HEAD"], throwOnError: false);
-        return code == 0;
+        return WithRepo(r => r.Head.Tip != null);
     }
 
     public string GetCurrentBranch()
     {
         EnsureInitialized();
-        var (exitCode, stdout) = RunGit(["rev-parse", "--abbrev-ref", "HEAD"], throwOnError: false);
-        if (exitCode == 0 && !string.IsNullOrWhiteSpace(stdout))
-        {
-            return stdout.Trim();
-        }
-
-        // Unborn branch (no commits yet): ask for the symbolic ref instead.
-        var (symCode, symOut) = RunGit(["symbolic-ref", "--short", "HEAD"], throwOnError: false);
-        return symCode == 0 && !string.IsNullOrWhiteSpace(symOut) ? symOut.Trim() : "main";
+        // "HEAD" when detached, as git rev-parse --abbrev-ref HEAD says; the branch name even before its first commit.
+        return WithRepo(r => r.Info.IsHeadDetached ? "HEAD" : r.Head.FriendlyName is { Length: > 0 } name ? name : "main");
     }
 
     /// <summary>
@@ -202,64 +173,27 @@ public sealed class GitRepositoryService
     public (List<string> Branches, string CurrentBranch) GetBranchesAndCurrent()
     {
         EnsureInitialized();
-        var (exitCode, stdout) = RunGit(["branch", "--format=%(HEAD)|%(refname:short)"], throwOnError: false);
-        var branches = new List<string>();
-        string? current = null;
-
-        if (exitCode == 0)
+        var branches = LocalBranches();
+        string current = GetCurrentBranch();
+        if (current != "HEAD" && !branches.Contains(current, StringComparer.Ordinal))
         {
-            foreach (string line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-            {
-                int bar = line.IndexOf('|');
-                if (bar < 0)
-                {
-                    continue;
-                }
-
-                bool isHead = line[..bar].Trim() == "*";
-                string name = line[(bar + 1)..].Trim();
-                if (name.StartsWith('('))
-                {
-                    // "(HEAD detached at abc1234)" is not a branch.
-                    current = isHead ? "HEAD" : current;
-                    continue;
-                }
-
-                branches.Add(name);
-                if (isHead)
-                {
-                    current = name;
-                }
-            }
+            branches.Add(current); // unborn branch (no commits yet)
         }
-
-        if (current == null)
-        {
-            // Unborn branch (no commits yet).
-            current = GetCurrentBranch();
-            if (!branches.Contains(current, StringComparer.Ordinal))
-            {
-                branches.Add(current);
-            }
-        }
-
         return (branches, current);
     }
 
     public List<string> GetBranches()
     {
         EnsureInitialized();
-        var (exitCode, stdout) = RunGit(["branch", "--format=%(refname:short)"], throwOnError: false);
-        if (exitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-        {
-            return [GetCurrentBranch()];
-        }
-
-        return stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => s.Trim())
-            .Where(s => !string.IsNullOrEmpty(s))
-            .ToList();
+        var branches = LocalBranches();
+        return branches.Count > 0 ? branches : [GetCurrentBranch()];
     }
+
+    private List<string> LocalBranches() => WithRepo(r => r.Branches
+        .Where(b => !b.IsRemote)
+        .Select(b => b.FriendlyName)
+        .OrderBy(n => n, StringComparer.Ordinal)
+        .ToList());
 
     /// <summary>
     /// Returns the repository's trunk branch: "main", or "master" for repositories that use it.
@@ -324,15 +258,14 @@ public sealed class GitRepositoryService
         FormattingRuleEngine.ApplyFormattingRules(document, profile);
         StageDocument(document);
 
-        var commitArgs = new List<string> { "commit", "--allow-empty", "-q", "-m", commitMessage };
-        if (!string.Equals(authorName, AuthorName, StringComparison.Ordinal))
+        // Imported reviewer edits are attributed to the reviewer; the committer stays the local user.
+        var committer = Identity();
+        var author = string.Equals(authorName, AuthorName, StringComparison.Ordinal) ? committer : new Git2.Signature(authorName, ReviewerEmail(authorName), committer.When);
+        var (sha, parents) = WithRepo(r =>
         {
-            // Attribute imported reviewer edits to the reviewer; the committer stays the local user.
-            commitArgs.Add($"--author={authorName} <>");
-        }
-        RunGit(commitArgs);
-
-        var (sha, parents) = GetCommitAndParents("HEAD");
+            var commit = r.Commit(commitMessage, author, committer, new Git2.CommitOptions { AllowEmptyCommit = true });
+            return (commit.Sha, commit.Parents.Select(p => p.Sha).ToList());
+        });
         RememberDocumentAtCommit(sha, document);
         var block = SignCommit(document, sha, parents, commitMessage, authorName, originSource);
         return (sha, block);
@@ -344,11 +277,19 @@ public sealed class GitRepositoryService
         bool legacyRemoved = WriteWorkingFiles(document);
         var paths = new List<string> { ManuscriptSectionStore.SectionFolder, ManuscriptSectionStore.MetadataPath, ".gitignore" };
         paths.AddRange(ExistingProjectPaths());
-        RunGit(["add", "-A", "--", .. paths]);
-        if (legacyRemoved)
+        WithRepo(r =>
         {
-            RunGit(["rm", "--cached", "-q", "--ignore-unmatch", "--", LegacyManuscriptPath, LegacyStatePath]);
-        }
+            // Added, changed and deleted files under these paths, as git add -A does (ignored files stay out).
+            Git2.Commands.Stage(r, paths);
+            if (legacyRemoved)
+            {
+                foreach (string legacy in new[] { LegacyManuscriptPath, LegacyStatePath })
+                {
+                    if (r.Index[legacy] != null) r.Index.Remove(legacy);
+                }
+                r.Index.Write();
+            }
+        });
     }
 
     /// <summary>Writes the manuscript's files; returns true when files of the earlier layout were removed.</summary>
@@ -391,48 +332,75 @@ public sealed class GitRepositoryService
 
     public string GetHeadCommitSha()
     {
-        var (code, stdout) = RunGit(["rev-parse", "HEAD"], throwOnError: false);
-        return code == 0 ? stdout.Trim() : string.Empty;
+        return WithRepo(r => r.Head.Tip?.Sha ?? string.Empty);
     }
 
     private (string Sha, List<string> Parents) GetCommitAndParents(string rev)
     {
-        var (_, stdout) = RunGit(["log", "-1", "--format=%H %P", rev]);
-        var parts = stdout.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return (parts[0], parts.Skip(1).ToList());
+        return WithRepo(r =>
+        {
+            var commit = r.Lookup<Git2.Commit>(rev) ?? throw new InvalidOperationException($"No commit {rev}.");
+            return (commit.Sha, commit.Parents.Select(p => p.Sha).ToList());
+        });
     }
 
     private string? ResolveCommit(string rev)
     {
-        var (code, stdout) = RunGit(["rev-parse", "--verify", "--quiet", $"{rev}^{{commit}}"], throwOnError: false);
-        return code == 0 && stdout.Trim().Length > 0 ? stdout.Trim() : null;
+        return WithRepo(r =>
+        {
+            try
+            {
+                return r.Lookup(rev)?.Peel<Git2.Commit>()?.Sha;
+            }
+            catch (Git2.LibGit2SharpException)
+            {
+                return null; // not a valid name
+            }
+        });
     }
 
     private string? GetMergeBase(string a, string b)
     {
-        var (code, stdout) = RunGit(["merge-base", a, b], throwOnError: false);
-        return code == 0 && stdout.Trim().Length > 0 ? stdout.Trim() : null;
+        return WithRepo(r => r.Lookup<Git2.Commit>(a) is { } ca && r.Lookup<Git2.Commit>(b) is { } cb
+            ? r.ObjectDatabase.FindMergeBase(ca, cb)?.Sha
+            : null);
     }
 
     public void CreateAndCheckoutBranch(string branchName, string? baseRef = null)
     {
         EnsureInitialized();
         string targetBase = string.IsNullOrWhiteSpace(baseRef) ? "HEAD" : baseRef;
-        if (GetBranches().Contains(branchName, StringComparer.Ordinal))
+        WithRepo(r =>
         {
-            RunGit(["checkout", "-q", branchName]);
-        }
-        else
-        {
-            RunGit(["checkout", "-q", "-b", branchName, targetBase]);
-        }
+            var branch = r.Branches[branchName];
+            if (branch == null || branch.IsRemote)
+            {
+                var start = r.Lookup(targetBase)?.Peel<Git2.Commit>() ?? throw new InvalidOperationException($"No commit {targetBase} to branch from.");
+                branch = r.CreateBranch(branchName, start);
+            }
+            Git2.Commands.Checkout(r, branch);
+        });
     }
 
     public void CheckoutBranch(string branchName)
     {
         EnsureInitialized();
-        RunGit(["checkout", "-q", branchName]);
+        Checkout(branchName);
     }
+
+    /// <summary>Checks a branch out (or a commit, detached), as git checkout does: changes in the working tree that do not conflict are kept.</summary>
+    private void Checkout(string branchOrCommit) => WithRepo(r =>
+    {
+        if (r.Branches[branchOrCommit] is { IsRemote: false } branch)
+        {
+            if (!branch.IsCurrentRepositoryHead) Git2.Commands.Checkout(r, branch);
+        }
+        else
+        {
+            var commit = r.Lookup(branchOrCommit)?.Peel<Git2.Commit>() ?? throw new InvalidOperationException($"No branch or commit {branchOrCommit}.");
+            Git2.Commands.Checkout(r, commit);
+        }
+    });
 
     /// <summary>
     /// Merges a review branch into main with a true two-parent merge commit. If main has changed since the
@@ -451,7 +419,7 @@ public sealed class GitRepositoryService
         string mainBranch = GetMainBranchName();
 
         string reviewTipSha = ResolveCommit(reviewBranchName) ?? string.Empty;
-        RunGit(["checkout", "-q", mainBranch]);
+        Checkout(mainBranch);
         string mainTipSha = GetHeadCommitSha();
 
         var final = resolvedDocument;
@@ -482,19 +450,16 @@ public sealed class GitRepositoryService
     {
         FormattingRuleEngine.ApplyFormattingRules(document, LoadFormattingProfile());
         StageDocument(document);
-        var (_, treeOut) = RunGit(["write-tree"]);
-
-        var args = new List<string> { "commit-tree", treeOut.Trim() };
-        foreach (string parent in parents)
+        var identity = Identity();
+        string sha = WithRepo(r =>
         {
-            args.AddRange(["-p", parent]);
-        }
-        args.AddRange(["-m", message]);
-        var (_, commitOut) = RunGit(args);
-        string sha = commitOut.Trim();
-
-        // The index and working files already match the new commit, so moving the branch is enough.
-        RunGit(["update-ref", $"refs/heads/{branch}", sha]);
+            var tree = r.ObjectDatabase.CreateTree(r.Index);
+            var parentCommits = parents.Select(p => r.Lookup<Git2.Commit>(p) ?? throw new InvalidOperationException($"No commit {p}.")).ToList();
+            var commit = r.ObjectDatabase.CreateCommit(identity, identity, message, tree, parentCommits, prettifyMessage: true);
+            // The index and working files already match the new commit, so moving the branch is enough.
+            r.Refs.UpdateTarget($"refs/heads/{branch}", commit.Sha);
+            return commit.Sha;
+        });
         RememberDocumentAtCommit(sha, document);
         return sha;
     }
@@ -577,25 +542,7 @@ public sealed class GitRepositoryService
 
     private ManuscriptDocument ReadDocumentAtCommit(string commitSha)
     {
-        // Two processes whatever the number of sections: list the manuscript's files, then read them all.
-        var (code, listing) = RunGit(
-            ["ls-tree", "-r", "-z", commitSha, "--", ManuscriptSectionStore.SectionFolder, ManuscriptSectionStore.MetadataPath, LegacyStatePath, LegacyManuscriptPath],
-            throwOnError: false);
-        if (code != 0)
-        {
-            return new ManuscriptDocument();
-        }
-
-        var blobByPath = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (string entry in listing.Split('\0', StringSplitOptions.RemoveEmptyEntries))
-        {
-            int tab = entry.IndexOf('\t');
-            var meta = tab > 0 ? entry[..tab].Split(' ') : [];
-            if (meta.Length == 3 && meta[1] == "blob")
-            {
-                blobByPath[entry[(tab + 1)..]] = meta[2];
-            }
-        }
+        var blobByPath = ListBlobs(commitSha, [ManuscriptSectionStore.SectionFolder, ManuscriptSectionStore.MetadataPath, LegacyStatePath, LegacyManuscriptPath]);
         if (blobByPath.Count == 0)
         {
             return new ManuscriptDocument();
@@ -622,7 +569,42 @@ public sealed class GitRepositoryService
         return new ManuscriptDocument();
     }
 
-    /// <summary>Reads many blobs with one <c>git cat-file --batch</c> process.</summary>
+    /// <summary>
+    /// The files (path → blob id) at a commit under the given paths, each a file or a folder (read recursively), as
+    /// git ls-tree -r lists them. Empty when the commit does not exist.
+    /// </summary>
+    private Dictionary<string, string> ListBlobs(string commitSha, IEnumerable<string> paths) => WithRepo(r =>
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (r.Lookup<Git2.Commit>(commitSha) is not { } commit)
+        {
+            return result;
+        }
+        void Walk(Git2.Tree tree, string prefix)
+        {
+            foreach (var entry in tree)
+            {
+                string path = prefix + entry.Name;
+                if (entry.Target is Git2.Tree sub) Walk(sub, path + "/");
+                else if (entry.Target is Git2.Blob) result[path] = entry.Target.Sha;
+            }
+        }
+        foreach (string path in paths.Distinct(StringComparer.Ordinal))
+        {
+            switch (commit[path]?.Target)
+            {
+                case Git2.Blob blob:
+                    result[path] = blob.Sha;
+                    break;
+                case Git2.Tree tree:
+                    Walk(tree, path.TrimEnd('/') + "/");
+                    break;
+            }
+        }
+        return result;
+    });
+
+    /// <summary>Reads many blobs (as stored, without line-ending conversion).</summary>
     private Dictionary<string, string> ReadBlobs(IEnumerable<string> blobShas)
         => ReadBlobBytes(blobShas).ToDictionary(kv => kv.Key, kv => Encoding.UTF8.GetString(kv.Value), StringComparer.OrdinalIgnoreCase);
 
@@ -634,27 +616,20 @@ public sealed class GitRepositoryService
         {
             return result;
         }
-
-        var (_, output, _) = RunGitRaw(WorkspacePath, ["cat-file", "--batch"], Encoding.ASCII.GetBytes(string.Join("\n", shas) + "\n"));
-        int pos = 0;
-        while (pos < output.Length)
+        return WithRepo(r =>
         {
-            int lineEnd = Array.IndexOf(output, (byte)'\n', pos);
-            if (lineEnd < 0)
+            foreach (string sha in shas)
             {
-                break;
+                if (r.Lookup<Git2.Blob>(sha) is { } blob)
+                {
+                    using var stream = blob.GetContentStream();
+                    using var buffer = new MemoryStream();
+                    stream.CopyTo(buffer);
+                    result[sha] = buffer.ToArray();
+                }
             }
-            string header = Encoding.ASCII.GetString(output, pos, lineEnd - pos);
-            pos = lineEnd + 1;
-            var parts = header.Split(' ');
-            if (parts.Length < 3 || !int.TryParse(parts[2], out int size))
-            {
-                continue; // "<sha> missing"
-            }
-            result[parts[0]] = output.AsSpan(pos, Math.Min(size, output.Length - pos)).ToArray();
-            pos += size + 1;
-        }
-        return result;
+            return result;
+        });
     }
 
     // ---- Provenance blocks (Git notes) -----------------------------------------------------------------
@@ -677,16 +652,10 @@ public sealed class GitRepositoryService
     {
         MigrateLegacyLedgerFile();
 
-        var commits = new List<(string Sha, List<string> Parents)>();
-        var (code, stdout) = RunGit(["log", "--branches", "--remotes", "--tags", "--topo-order", "--reverse", "--format=%H %P"], throwOnError: false);
-        if (code == 0)
-        {
-            foreach (string line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-            {
-                var parts = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                commits.Add((parts[0], parts.Skip(1).ToList()));
-            }
-        }
+        // Parents before children, from every branch, GitHub branch and tag (not the notes refs).
+        var commits = WithRepo(r => History(r, Git2.CommitSortStrategies.Topological | Git2.CommitSortStrategies.Reverse)
+            .Select(c => (c.Sha, c.Parents.Select(p => p.Sha).ToList()))
+            .ToList());
 
         return ProvenanceChainService.BuildLedger(RevisionsDir, documentId, commits, ReadProvenanceNotes());
     }
@@ -694,26 +663,12 @@ public sealed class GitRepositoryService
     private Dictionary<string, TextChainBlock> ReadProvenanceNotes()
     {
         var blocks = new Dictionary<string, TextChainBlock>(StringComparer.OrdinalIgnoreCase);
-        var (code, listing) = RunGit(["notes", $"--ref={ProvenanceNotesRef}", "list"], throwOnError: false);
-        if (code != 0 || string.IsNullOrWhiteSpace(listing))
+        var notes = WithRepo(r => r.Refs[ProvenanceNotesRef] == null
+            ? []
+            : r.Notes[ProvenanceNotesNamespace].Select(n => (Commit: n.TargetObjectId.Sha, Json: n.Message)).ToList());
+        foreach (var (commit, json) in notes)
         {
-            return blocks;
-        }
-
-        var commitByNote = new List<(string Note, string Commit)>();
-        foreach (string line in listing.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            var parts = line.Trim().Split(' ');
-            if (parts.Length == 2)
-            {
-                commitByNote.Add((parts[0], parts[1]));
-            }
-        }
-
-        var contents = ReadBlobs(commitByNote.Select(n => n.Note));
-        foreach (var (note, commit) in commitByNote)
-        {
-            if (contents.TryGetValue(note, out var json) && ProvenanceChainService.DeserializeBlock(json.Trim()) is { } block
+            if (ProvenanceChainService.DeserializeBlock(json.Trim()) is { } block
                 && string.Equals(block.CommitSha, commit, StringComparison.OrdinalIgnoreCase))
             {
                 blocks[commit] = block;
@@ -739,7 +694,8 @@ public sealed class GitRepositoryService
         }
 
         var block = ProvenanceChainService.AppendSignedBlock(RevisionsDir, _ledgerCache, document, sha, message, author, origin, parents);
-        RunGit(["notes", $"--ref={ProvenanceNotesRef}", "add", "-f", "-F", "-", sha], stdin: ProvenanceChainService.SerializeBlock(block));
+        var identity = Identity();
+        WithRepo(r => r.Notes.Add(new Git2.ObjectId(sha), ProvenanceChainService.SerializeBlock(block), identity, identity, ProvenanceNotesNamespace));
         return block;
     }
 
@@ -793,17 +749,21 @@ public sealed class GitRepositoryService
         {
             return result;
         }
-        var (_, output, _) = RunGitRaw(WorkspacePath, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(rest)"],
-            Encoding.ASCII.GetBytes(string.Concat(shas.Select(s => $"{s} {s}\n"))));
-        foreach (string line in Encoding.ASCII.GetString(output).Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        return WithRepo(r =>
         {
-            var parts = line.Split(' ');
-            if (parts.Length == 3 && parts[1] == "commit")
+            foreach (string sha in shas)
             {
-                result[parts[2]] = parts[0];
+                try
+                {
+                    if (r.Lookup<Git2.Commit>(sha) is { } commit) result[sha] = commit.Sha;
+                }
+                catch (Git2.LibGit2SharpException)
+                {
+                    // Ambiguous or invalid: not a commit here.
+                }
             }
-        }
-        return result;
+            return result;
+        });
     }
 
     /// <summary>Adds many notes in one commit to the notes ref (one <c>git fast-import</c> process).</summary>
@@ -814,30 +774,15 @@ public sealed class GitRepositoryService
             return;
         }
 
-        string? parent = ResolveCommit(ProvenanceNotesRef);
-        var stream = new MemoryStream();
-        void Write(string s) { var bytes = Utf8NoBom.GetBytes(s); stream.Write(bytes); }
-        void Data(string s) { var bytes = Utf8NoBom.GetBytes(s); Write($"data {bytes.Length}\n"); stream.Write(bytes); Write("\n"); }
-
-        Write($"commit {ProvenanceNotesRef}\n");
-        Write($"committer {_authorName ?? Environment.UserName} <{_authorEmail}> {DateTimeOffset.UtcNow.ToUnixTimeSeconds()} +0000\n");
-        Data(message);
-        if (parent != null)
+        var identity = Identity();
+        _ = message;
+        WithRepo(r =>
         {
-            Write($"from {parent}\n");
-        }
-        foreach (var (commit, note) in notesByCommit)
-        {
-            Write($"N inline {commit}\n");
-            Data(note);
-        }
-        Write("done\n");
-
-        var (code, _, stderr) = RunGitRaw(WorkspacePath, ["fast-import", "--quiet", "--done"], stream.ToArray());
-        if (code != 0)
-        {
-            throw new InvalidOperationException($"Storing provenance blocks failed: {stderr}");
-        }
+            foreach (var (commit, note) in notesByCommit)
+            {
+                r.Notes.Add(new Git2.ObjectId(commit), note, identity, identity, ProvenanceNotesNamespace);
+            }
+        });
     }
 
     /// <summary>
@@ -848,9 +793,27 @@ public sealed class GitRepositoryService
     public List<GitCommitNode> GetCommitGraph(ProvenanceLedger? ledger = null, ChainVerificationResult? verification = null)
     {
         EnsureInitialized();
-        // Not --all: that would include the commits of the provenance notes ref.
-        var (code, stdout) = RunGit(["log", "--branches", "--remotes", "--tags", "--topo-order", "--format=%H|%P|%an|%aI|%D|%s"], throwOnError: false);
-        if (code != 0 || string.IsNullOrWhiteSpace(stdout))
+        // Not every ref: the provenance notes ref has commits of its own. Newest first, children before parents.
+        var commits = WithRepo(r =>
+        {
+            // The branch and tag names at each commit, as git log --decorate shows them.
+            var names = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            void Name(string? sha, string name)
+            {
+                if (sha == null) return;
+                if (!names.TryGetValue(sha, out var list)) names[sha] = list = [];
+                list.Add(name);
+            }
+            if (r.Info.IsHeadDetached) Name(r.Head.Tip?.Sha, "HEAD");
+            foreach (var b in r.Branches.Where(b => !b.IsRemote)) Name(b.Tip?.Sha, b.FriendlyName);
+            foreach (var b in r.Branches.Where(b => b.IsRemote)) Name(b.Tip?.Sha, b.FriendlyName);
+            foreach (var t in r.Tags) Name((t.PeeledTarget as Git2.Commit)?.Sha, $"tag: {t.FriendlyName}");
+            return History(r, Git2.CommitSortStrategies.Topological | Git2.CommitSortStrategies.Time)
+                .Select(c => (c.Sha, Parents: c.Parents.Select(p => p.Sha).ToList(), Author: c.Author.Name, When: c.Author.When,
+                    Refs: names.GetValueOrDefault(c.Sha) ?? [], Subject: c.MessageShort))
+                .ToList();
+        });
+        if (commits.Count == 0)
         {
             return [];
         }
@@ -865,26 +828,14 @@ public sealed class GitRepositoryService
             .ToDictionary(g => g.Key, g => g.First());
 
         var nodes = new List<GitCommitNode>();
-        string[] lines = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (string line in lines)
+        foreach (var c in commits)
         {
-            string[] parts = line.Split('|', 6);
-            if (parts.Length < 6)
-            {
-                continue;
-            }
-
-            string sha = parts[0].Trim();
-            var parents = parts[1].Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
-            string author = parts[2].Trim();
-            DateTimeOffset timestamp = DateTimeOffset.TryParse(parts[3].Trim(), out var dt) ? dt : DateTimeOffset.UtcNow;
-            var refs = parts[4]
-                .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(r => r.Trim().Replace("HEAD -> ", ""))
-                .Where(r => !string.IsNullOrEmpty(r) && r != $"{RemoteName}/HEAD")
-                .ToList();
-            string msg = parts[5].Trim();
+            string sha = c.Sha;
+            var parents = c.Parents;
+            string author = c.Author;
+            DateTimeOffset timestamp = c.When;
+            var refs = c.Refs.Where(r => r != $"{RemoteName}/HEAD").ToList();
+            string msg = c.Subject.Trim();
 
             bool isReviewLane = refs.Any(r => r.StartsWith("review/", StringComparison.OrdinalIgnoreCase)
                     || r.StartsWith($"{RemoteName}/review/", StringComparison.OrdinalIgnoreCase))
@@ -921,14 +872,17 @@ public sealed class GitRepositoryService
     public string? GetRemoteUrl()
     {
         EnsureInitialized();
-        var (code, stdout) = RunGit(["remote", "get-url", RemoteName], throwOnError: false);
-        return code == 0 && stdout.Trim().Length > 0 ? stdout.Trim() : null;
+        return WithRepo(r => r.Network.Remotes[RemoteName]?.Url is { Length: > 0 } url ? url : null);
     }
 
     public void SetRemoteUrl(string url)
     {
         EnsureInitialized();
-        RunGit(GetRemoteUrl() == null ? ["remote", "add", RemoteName, url] : ["remote", "set-url", RemoteName, url]);
+        WithRepo(r =>
+        {
+            if (r.Network.Remotes[RemoteName] == null) r.Network.Remotes.Add(RemoteName, url);
+            else r.Network.Remotes.Update(RemoteName, remote => remote.Url = url);
+        });
     }
 
     /// <summary>
@@ -966,17 +920,12 @@ public sealed class GitRepositoryService
     /// <summary>Every branch, GitHub branch and notes ref with its commit, from one process.</summary>
     private Dictionary<string, string> ReadRefs()
     {
-        var (_, stdout) = RunGit(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", $"refs/remotes/{RemoteName}", "refs/notes", "refs/tags"]);
-        var refs = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (string line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            int space = line.LastIndexOf(' ');
-            if (space > 0)
-            {
-                refs[line[..space]] = line[(space + 1)..].Trim();
-            }
-        }
-        return refs;
+        return WithRepo(r => r.Refs
+            .Where(x => x is not Git2.SymbolicReference && (x.CanonicalName.StartsWith("refs/heads/", StringComparison.Ordinal)
+                || x.CanonicalName.StartsWith($"refs/remotes/{RemoteName}/", StringComparison.Ordinal)
+                || x.CanonicalName.StartsWith("refs/notes/", StringComparison.Ordinal)
+                || x.CanonicalName.StartsWith("refs/tags/", StringComparison.Ordinal)))
+            .ToDictionary(x => x.CanonicalName, x => x.TargetIdentifier, StringComparer.Ordinal));
     }
 
     /// <summary>Combines the provenance blocks from GitHub with the local ones (they are on different commits).</summary>
@@ -988,7 +937,7 @@ public sealed class GitRepositoryService
         }
         if (!refs.TryGetValue(ProvenanceNotesRef, out var local))
         {
-            RunGit(["update-ref", ProvenanceNotesRef, remote]);
+            UpdateRef(ProvenanceNotesRef, remote);
         }
         else if (!string.Equals(local, remote, StringComparison.OrdinalIgnoreCase))
         {
@@ -998,7 +947,14 @@ public sealed class GitRepositoryService
     }
 
     private bool IsAncestor(string ancestor, string descendant)
-        => RunGit(["merge-base", "--is-ancestor", ancestor, descendant], throwOnError: false).ExitCode == 0;
+        => string.Equals(ancestor, descendant, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(GetMergeBase(ancestor, descendant), ancestor, StringComparison.OrdinalIgnoreCase);
+
+    private void UpdateRef(string name, string sha) => WithRepo(r =>
+    {
+        if (r.Refs[name] == null) r.Refs.Add(name, sha);
+        else r.Refs.UpdateTarget(name, sha);
+    });
 
     /// <summary>
     /// Synchronizes with GitHub: fetches every branch and the provenance blocks, takes branches that only
@@ -1052,7 +1008,7 @@ public sealed class GitRepositoryService
                     }
                     else
                     {
-                        RunGit(["update-ref", $"{headsPrefix}{branch}", remoteSha, localSha]);
+                        UpdateRef($"{headsPrefix}{branch}", remoteSha);
                     }
                     report.BranchesUpdated++;
                     report.Lines.Add($"'{branch}' updated with changes from GitHub.");
@@ -1066,7 +1022,7 @@ public sealed class GitRepositoryService
                 {
                     if (branch != checkedOut)
                     {
-                        RunGit(["checkout", "-q", branch]);
+                        Checkout(branch);
                         checkedOut = branch;
                     }
                     var merge = MergeDivergedBranch(branch, localSha, remoteSha, authorName);
@@ -1081,7 +1037,7 @@ public sealed class GitRepositoryService
             {
                 if (!localBranches.ContainsKey(branch))
                 {
-                    RunGit(["update-ref", $"{headsPrefix}{branch}", remoteSha]);
+                    UpdateRef($"{headsPrefix}{branch}", remoteSha);
                     report.BranchesUpdated++;
                     report.Lines.Add($"'{branch}' added from GitHub.");
                 }
@@ -1091,7 +1047,14 @@ public sealed class GitRepositoryService
         {
             if (checkedOut != startBranch && startBranch != "HEAD")
             {
-                RunGit(["checkout", "-q", startBranch], throwOnError: false);
+                try
+                {
+                    Checkout(startBranch);
+                }
+                catch (Exception ex) when (ex is Git2.LibGit2SharpException or InvalidOperationException)
+                {
+                    // Left on the merged branch; the app reloads whatever is checked out.
+                }
             }
         }
 
@@ -1176,22 +1139,7 @@ public sealed class GitRepositoryService
 
     private Dictionary<string, string> ListProjectBlobs(string commitSha)
     {
-        var (code, listing) = RunGit(["ls-tree", "-r", "-z", commitSha, "--", .. ProjectPaths()], throwOnError: false);
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (code != 0)
-        {
-            return result;
-        }
-        foreach (string entry in listing.Split('\0', StringSplitOptions.RemoveEmptyEntries))
-        {
-            int tab = entry.IndexOf('\t');
-            var meta = tab > 0 ? entry[..tab].Split(' ') : [];
-            if (meta.Length == 3 && meta[1] == "blob")
-            {
-                result[entry[(tab + 1)..]] = meta[2];
-            }
-        }
-        return result;
+        return ListBlobs(commitSha, ProjectPaths());
     }
 
     /// <summary>
@@ -1287,35 +1235,74 @@ public sealed class GitRepositoryService
     public void CreateTag(string name, string commitSha)
     {
         EnsureInitialized();
-        RunGit(["tag", "-f", name, commitSha]);
+        WithRepo(r => r.Tags.Add(name, commitSha, allowOverwrite: true));
     }
 
     /// <summary>Tags and the commits they point to.</summary>
     public Dictionary<string, string> GetTags()
     {
         EnsureInitialized();
-        var (_, stdout) = RunGit(["for-each-ref", "--format=%(refname:short) %(objectname) %(*objectname)", "refs/tags"], throwOnError: false);
-        var tags = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (string line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length >= 2)
-            {
-                // Annotated tags point at a tag object; the third field is the commit it tags.
-                tags[parts[0]] = parts.Length >= 3 ? parts[2] : parts[1];
-            }
-        }
-        return tags;
+        // Annotated tags point at a tag object; the commit it tags is what matters.
+        return WithRepo(r => r.Tags.ToDictionary(t => t.FriendlyName, t => (t.PeeledTarget ?? t.Target).Sha, StringComparer.Ordinal));
     }
 
     /// <summary>Reads one file as it was at a commit (null if it did not exist).</summary>
     public string? ReadFileAtCommit(string commitSha, string path)
     {
-        var (code, stdout) = RunGit(["show", $"{commitSha}:{path}"], throwOnError: false);
-        return code == 0 ? stdout : null;
+        var blobs = ListBlobs(commitSha, [path]);
+        return blobs.TryGetValue(path, out var sha) && ReadBlobBytes([sha]).TryGetValue(sha, out var bytes) ? Encoding.UTF8.GetString(bytes) : null;
     }
 
-    // ---- Running Git -----------------------------------------------------------------------------------
+    // ---- Git inside the app (libgit2) -------------------------------------------------------------------
+
+    /// <summary>The notes namespace of <see cref="ProvenanceNotesRef"/> (refs/notes/&lt;namespace&gt;).</summary>
+    private const string ProvenanceNotesNamespace = "revisions-provenance";
+
+    private readonly object _repoLock = new();
+
+    /// <summary>
+    /// Runs an operation on the repository, opened for it (opening is cheap in-process, and a fresh handle always
+    /// sees what git commands run for GitHub changed). One at a time: a handle is not thread-safe.
+    /// </summary>
+    private T WithRepo<T>(Func<Git2.Repository, T> operation)
+    {
+        lock (_repoLock)
+        {
+            using var repo = new Git2.Repository(WorkspacePath);
+            return operation(repo);
+        }
+    }
+
+    private void WithRepo(Action<Git2.Repository> operation) => WithRepo<object?>(r => { operation(r); return null; });
+
+    /// <summary>
+    /// A reviewer's commit needs an email address (libgit2 refuses an empty one); this one is on the reserved
+    /// .invalid domain, so it can never reach anyone. History shows the reviewer's name.
+    /// </summary>
+    private static string ReviewerEmail(string name)
+    {
+        var slug = new string(name.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
+        return $"{(slug.Length > 0 ? slug : "reviewer")}@reviewer.invalid";
+    }
+
+    /// <summary>The local user as the author and committer of a new commit.</summary>
+    private Git2.Signature Identity() => new(_authorName ?? Environment.UserName, _authorEmail ?? $"{Environment.UserName}@{Environment.MachineName}", DateTimeOffset.Now);
+
+    /// <summary>Commits reachable from every branch, GitHub branch and tag (not the notes refs).</summary>
+    private static IEnumerable<Git2.Commit> History(Git2.Repository r, Git2.CommitSortStrategies sort)
+    {
+        var tips = r.Refs
+            .Where(x => x.CanonicalName.StartsWith("refs/heads/", StringComparison.Ordinal)
+                || x.CanonicalName.StartsWith("refs/remotes/", StringComparison.Ordinal)
+                || x.CanonicalName.StartsWith("refs/tags/", StringComparison.Ordinal))
+            .Select(x => x.ResolveToDirectReference()?.Target?.Peel<Git2.Commit>())
+            .OfType<Git2.Commit>()
+            .DistinctBy(c => c.Sha)
+            .ToList();
+        return tips.Count == 0 ? [] : r.Commits.QueryBy(new Git2.CommitFilter { IncludeReachableFrom = tips, SortBy = sort });
+    }
+
+    // ---- Running Git (for GitHub: fetch, push, clone) ----------------------------------------------------
 
     private (int ExitCode, string Stdout) RunGit(IReadOnlyList<string> arguments, bool throwOnError = true, string? stdin = null)
     {

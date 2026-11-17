@@ -325,6 +325,11 @@ public partial class MainWindow : Window
     {
         _manuscriptDirty = false;
         var caret = preserveCaret ? CaptureCaret() : null;
+        var caretParagraph = CaretParagraph;
+        // Assigning a new document scrolls the editor to the top; inserting a figure or fixing an issue should
+        // leave the page where it was.
+        double scrollOffset = ManuscriptEditor.VerticalOffset;
+        bool updatedInPlace = false;
 
         _renderingEditor = true;
         try
@@ -345,13 +350,35 @@ public partial class MainWindow : Window
             // RichTextBox replaces the document's page padding when it is assigned, so set the page margins
             // afterwards. (Its own Padding would be painted with the theme's fill, grey in dark mode.)
             var margins = document.PagePadding;
-            ManuscriptEditor.Document = document;
-            document.PagePadding = margins;
+            // Most edits change a block or two: replace only those, so the page does not lay itself out again
+            // and the caret, selection and scroll position stay where they are.
+            PageReconciler.WorkspacePath = ViewModel.WorkspacePath;
+            if (ManuscriptEditor.Document is { Blocks.Count: > 0 } live && live != document)
+            {
+                // As with a new document, the page's own undo history does not reach back past a redraw.
+                ManuscriptEditor.IsUndoEnabled = false;
+                ManuscriptEditor.BeginChange();
+                try
+                {
+                    updatedInPlace = PageReconciler.TryUpdate(live, document, out _);
+                }
+                finally
+                {
+                    ManuscriptEditor.EndChange();
+                    ManuscriptEditor.IsUndoEnabled = true;
+                }
+            }
+            if (!updatedInPlace)
+            {
+                ManuscriptEditor.Document = document;
+                document.PagePadding = margins;
+            }
+            var shown = ManuscriptEditor.Document;
 
             _blocksAtRender = ViewModel.CurrentDocument.Blocks.Select(b => b.Clone()).ToList();
             // Paragraphs with pending changes are put back if deleted by accident; figures, tables and
             // equations may be deleted on the page like any paragraph.
-            _lockedIdsAtRender = document.Blocks
+            _lockedIdsAtRender = shown.Blocks
                 .OfType<BlockUIContainer>()
                 .Select(b => b.Tag as EditorBlockTag)
                 .Where(t => t?.LockedBlock != null && t.Role is not (BlockStyleRole.Figure or BlockStyleRole.Table or BlockStyleRole.Equation))
@@ -366,9 +393,16 @@ public partial class MainWindow : Window
 
         _editorDirty = false;
         _editorSyncTimer?.Stop();
-        if (caret is { } position)
+        // Updated in place, the caret stays in its paragraph unless that paragraph was replaced.
+        bool caretKept = updatedInPlace && caretParagraph != null && ManuscriptEditor.Document.Blocks.Contains(caretParagraph);
+        if (caret is { } position && !caretKept)
         {
             RestoreCaret(position);
+        }
+        if (scrollOffset > 0 && !updatedInPlace)
+        {
+            // After the new page is laid out (and after the caret, which would scroll to itself).
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => ManuscriptEditor.ScrollToVerticalOffset(scrollOffset));
         }
         UpdateEditorHint();
         UpdateEditorToolbar();

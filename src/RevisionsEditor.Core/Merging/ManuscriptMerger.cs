@@ -26,28 +26,41 @@ public sealed class ManuscriptMergeResult
 }
 
 /// <summary>
-/// Three-way merge of manuscripts at paragraph level, with word-level merging inside paragraphs.
+/// Three-way merge (diff3) of manuscripts at paragraph level, with diff3 over words inside paragraphs.
 ///
 /// Both versions are compared with the version they started from (the base). Paragraphs are aligned by
 /// content, not position, so inserted or removed paragraphs do not shift the comparison. A paragraph changed
 /// on one side only takes that side's version; changed on both sides, non-overlapping edits are combined.
 /// Edits that genuinely conflict are not resolved silently: they become pending changes (keeping "ours" as
 /// the current text, with "theirs" proposed) to accept or reject in the Changes pane.
+///
+/// Matching ignores what a round trip through Google Docs does not keep: Markdown emphasis markers, quote and
+/// dash variants, and whitespace. So the same edit made on both sides is recognised as one edit even when one
+/// side lost its formatting, and a paragraph added on both sides appears once. Pending changes (CriticMarkup)
+/// are kept as whole units: the rest of their paragraph still merges word by word.
 /// </summary>
 public static class ManuscriptMerger
 {
     private static readonly Regex CriticTokenRegex = new(@"\{(~~|\+\+|--|==|>>)", RegexOptions.Compiled);
+    private static readonly Regex CriticSpanRegex = new(
+        @"(\{~~.*?~~\}|\{\+\+.*?\+\+\}|\{--.*?--\}|\{==.*?==\}\{>>.*?<<\}|\{>>.*?<<\})\s*",
+        RegexOptions.Singleline | RegexOptions.Compiled);
     private const double PairingThreshold = 0.5;
 
+    /// <param name="trustParagraphIds">
+    /// Whether equal paragraph ids on two sides mean the same paragraph. True between versions of the manuscript;
+    /// false for a Google Docs pull, whose ids are only positions.
+    /// </param>
     public static ManuscriptMergeResult Merge(
         ManuscriptDocument baseDoc,
         ManuscriptDocument ours,
         ManuscriptDocument theirs,
-        string theirsAuthor)
+        string theirsAuthor,
+        bool trustParagraphIds = true)
     {
         var baseBlocks = baseDoc.Blocks;
-        var oursMatch = Align(baseBlocks, ours.Blocks);
-        var theirsMatch = Align(baseBlocks, theirs.Blocks);
+        var oursMatch = Align(baseBlocks, ours.Blocks, trustParagraphIds);
+        var theirsMatch = Align(baseBlocks, theirs.Blocks, trustParagraphIds);
         var oursInserts = InsertionsByAnchor(oursMatch, ours.Blocks.Count);
         var theirsInserts = InsertionsByAnchor(theirsMatch, theirs.Blocks.Count);
 
@@ -74,7 +87,7 @@ public static class ManuscriptMerger
             foreach (int index in fromTheirs)
             {
                 // The same paragraph added on both sides appears once.
-                if (fromOurs.Any(oi => Key(ours.Blocks[oi].Text) == Key(theirs.Blocks[index].Text)))
+                if (fromOurs.Any(oi => MatchKey(ours.Blocks[oi].Text) == MatchKey(theirs.Blocks[index].Text)))
                 {
                     continue;
                 }
@@ -127,19 +140,10 @@ public static class ManuscriptMerger
             else
             {
                 var role = o.Role != b.Role ? o.Role : t.Role;
-                if (HasMarkup(b.Text) || HasMarkup(o.Text) || HasMarkup(t.Text))
-                {
-                    // Pending review markup cannot be merged word by word; keep ours and note their version.
-                    builder.AddWithComment(o, role, $"Changed in both versions. Other version: {DiffEngineService.ToGoogleDocsText(t.Text)}");
-                    result.Conflicts++;
-                }
-                else
-                {
-                    var (text, conflicts) = MergeWords(b.Text, o.Text, t.Text);
-                    builder.AddMerged(o, role, text, conflicts);
-                    if (conflicts.Count > 0) result.Conflicts += conflicts.Count;
-                    else result.Combined++;
-                }
+                var (text, conflicts) = MergeWords(b.Text, o.Text, t.Text, theirsAuthor);
+                builder.AddMerged(o, t, role, text, conflicts);
+                if (conflicts.Count > 0) result.Conflicts += conflicts.Count;
+                else result.Combined++;
             }
 
             EmitInsertions(i);
@@ -154,18 +158,24 @@ public static class ManuscriptMerger
 
     private static bool SameBlock(DocumentBlock a, DocumentBlock b) => a.Role == b.Role && Key(a.Text) == Key(b.Text);
 
+    /// <summary>
+    /// The paragraph as it reads (pending changes accepted, no emphasis markers), with quote, dash and space
+    /// variants unified: equal for two versions that differ only in what Google Docs does not keep.
+    /// </summary>
+    public static string MatchKey(string text) => DiffEngineService.GoogleDocsMatchKey(DiffEngineService.ToGoogleDocsText(text));
+
     private static bool HasMarkup(string text) => CriticTokenRegex.IsMatch(text);
 
     /// <summary>
     /// For each paragraph of <paramref name="from"/>, the index of the same paragraph in <paramref name="to"/>,
-    /// or -1 if it was removed. Unchanged paragraphs are matched by an LCS over their text; between those,
-    /// edited paragraphs are paired by similarity, keeping their order.
+    /// or -1 if it was removed. Paragraphs that read the same (<see cref="MatchKey"/>) are matched by an LCS;
+    /// between those, edited paragraphs are paired by similarity, keeping their order.
     /// </summary>
-    public static int[] Align(IReadOnlyList<DocumentBlock> from, IReadOnlyList<DocumentBlock> to)
+    public static int[] Align(IReadOnlyList<DocumentBlock> from, IReadOnlyList<DocumentBlock> to, bool trustParagraphIds = true)
     {
         int n = from.Count, m = to.Count, width = m + 1;
-        var fromKeys = from.Select(b => Key(b.Text)).ToArray();
-        var toKeys = to.Select(b => Key(b.Text)).ToArray();
+        var fromKeys = from.Select(b => MatchKey(b.Text)).ToArray();
+        var toKeys = to.Select(b => MatchKey(b.Text)).ToArray();
         var dp = new int[(n + 1) * width];
         for (int i = n - 1; i >= 0; i--)
         {
@@ -185,7 +195,7 @@ public static class ManuscriptMerger
         {
             if (x < n && y < m && fromKeys[x] == toKeys[y])
             {
-                PairBySimilarity(from, to, gapFrom, gapTo, match);
+                PairBySimilarity(from, to, gapFrom, gapTo, match, trustParagraphIds);
                 match[x++] = y++;
             }
             else if (y >= m || (x < n && dp[(x + 1) * width + y] >= dp[x * width + y + 1]))
@@ -197,12 +207,12 @@ public static class ManuscriptMerger
                 gapTo.Add(y++);
             }
         }
-        PairBySimilarity(from, to, gapFrom, gapTo, match);
+        PairBySimilarity(from, to, gapFrom, gapTo, match, trustParagraphIds);
         return match;
     }
 
     /// <summary>Order-preserving pairing of edited paragraphs within a gap, maximizing total similarity.</summary>
-    private static void PairBySimilarity(IReadOnlyList<DocumentBlock> from, IReadOnlyList<DocumentBlock> to, List<int> gapFrom, List<int> gapTo, int[] match)
+    private static void PairBySimilarity(IReadOnlyList<DocumentBlock> from, IReadOnlyList<DocumentBlock> to, List<int> gapFrom, List<int> gapTo, int[] match, bool trustParagraphIds)
     {
         int p = gapFrom.Count, q = gapTo.Count;
         if (p > 0 && q > 0)
@@ -210,7 +220,7 @@ public static class ManuscriptMerger
             var sim = new double[p, q];
             for (int a = 0; a < p; a++)
                 for (int c = 0; c < q; c++)
-                    sim[a, c] = Similarity(from[gapFrom[a]], to[gapTo[c]]);
+                    sim[a, c] = Similarity(from[gapFrom[a]], to[gapTo[c]], trustParagraphIds);
 
             var best = new double[p + 1, q + 1];
             for (int a = p - 1; a >= 0; a--)
@@ -240,7 +250,7 @@ public static class ManuscriptMerger
     }
 
     /// <summary>Word overlap, or character-pair overlap for short paragraphs such as headings.</summary>
-    private static double Similarity(DocumentBlock a, DocumentBlock b)
+    private static double Similarity(DocumentBlock a, DocumentBlock b, bool trustParagraphIds)
     {
         string ta = DiffEngineService.ToGoogleDocsText(a.Text);
         string tb = DiffEngineService.ToGoogleDocsText(b.Text);
@@ -249,7 +259,7 @@ public static class ManuscriptMerger
         {
             score = Math.Max(score, BigramSimilarity(ta, tb));
         }
-        if (a.ParagraphId == b.ParagraphId && a.Role == b.Role)
+        if (trustParagraphIds && a.ParagraphId == b.ParagraphId && a.Role == b.Role)
         {
             score += 0.15;
         }
@@ -312,19 +322,27 @@ public static class ManuscriptMerger
 
     // ---- Word-level merge within a paragraph -----------------------------------------------------------
 
-    public sealed record WordConflict(string Ours, string Theirs);
+    /// <summary>
+    /// A conflicting region: ours → theirs, written as a pending change, or, when either side already holds a
+    /// pending change (which cannot be nested), ours kept with a comment giving theirs (<see cref="Comment"/>).
+    /// </summary>
+    public sealed record WordConflict(string Ours, string Theirs, string? Comment = null);
 
     /// <summary>
     /// diff3 over words. Returns the merged text in which every conflicting region is written as a pending
     /// CriticMarkup change from ours to theirs, plus the list of those conflicts.
     /// </summary>
-    public static (string Text, List<WordConflict> Conflicts) MergeWords(string baseText, string oursText, string theirsText)
+    /// <remarks>
+    /// Words are matched ignoring quote, dash and spacing variants, and each pending change (CriticMarkup) is one
+    /// unit. Where a word survives on all sides its spelling is merged too: a side that changed it wins.
+    /// </remarks>
+    public static (string Text, List<WordConflict> Conflicts) MergeWords(string baseText, string oursText, string theirsText, string theirsAuthor = "Other version")
     {
-        var b = DiffEngineService.TokenizeWords(baseText);
-        var o = DiffEngineService.TokenizeWords(oursText);
-        var t = DiffEngineService.TokenizeWords(theirsText);
-        var bo = MatchTokens(b, o);
-        var bt = MatchTokens(b, t);
+        var b = Tokenize(baseText);
+        var o = Tokenize(oursText);
+        var t = Tokenize(theirsText);
+        var bo = MatchTokens(b.Select(TokenKey).ToArray(), o.Select(TokenKey).ToArray());
+        var bt = MatchTokens(b.Select(TokenKey).ToArray(), t.Select(TokenKey).ToArray());
 
         var sb = new StringBuilder();
         var conflicts = new List<WordConflict>();
@@ -342,7 +360,13 @@ public static class ManuscriptMerger
             string theirsChunk = string.Concat(t[it..tEnd]);
 
             if (oursChunk == baseChunk) sb.Append(theirsChunk);
-            else if (theirsChunk == baseChunk || theirsChunk == oursChunk) sb.Append(oursChunk);
+            else if (theirsChunk == baseChunk || theirsChunk == oursChunk || SameWords(oursChunk, theirsChunk)) sb.Append(oursChunk);
+            else if (HasMarkup(oursChunk) || HasMarkup(theirsChunk))
+            {
+                string comment = CommentSpan(theirsAuthor, $"Changed in both versions. Other version: \"{DiffEngineService.ToGoogleDocsText(theirsChunk)}\"");
+                conflicts.Add(new WordConflict(oursChunk, theirsChunk, comment));
+                sb.Append(oursChunk.TrimEnd()).Append(comment).Append(TrailingSpace(oursChunk.Length > 0 ? oursChunk : baseChunk));
+            }
             else
             {
                 conflicts.Add(new WordConflict(oursChunk, theirsChunk));
@@ -350,13 +374,40 @@ public static class ManuscriptMerger
             }
 
             if (next >= b.Length) break;
-            sb.Append(b[next]);
+            // The word itself is unchanged on both sides, but its spelling may differ (a curly quote, a space).
+            string bw = b[next], ow = o[bo[next]], tw = t[bt[next]];
+            sb.Append(ow == bw ? tw : ow);
             i = next + 1;
             io = bo[next] + 1;
             it = bt[next] + 1;
         }
         return (sb.ToString(), conflicts);
     }
+
+    /// <summary>Words, punctuation and spaces as in <see cref="DiffEngineService.TokenizeWords"/>, each pending change one token.</summary>
+    private static string[] Tokenize(string text)
+    {
+        var tokens = new List<string>();
+        int at = 0;
+        foreach (Match m in CriticSpanRegex.Matches(text))
+        {
+            tokens.AddRange(DiffEngineService.TokenizeWords(text[at..m.Index]));
+            tokens.Add(m.Value);
+            at = m.Index + m.Length;
+        }
+        tokens.AddRange(DiffEngineService.TokenizeWords(text[at..]));
+        return [.. tokens];
+    }
+
+    private static string TokenKey(string token) => HasMarkup(token) ? token.Trim() : DiffEngineService.GoogleDocsMatchKey(token);
+
+    /// <summary>The same words, ignoring emphasis markers and quote, dash and spacing variants.</summary>
+    private static bool SameWords(string a, string b) => !HasMarkup(a) && !HasMarkup(b)
+        && DiffEngineService.GoogleDocsMatchKey(a.Replace("*", string.Empty)) == DiffEngineService.GoogleDocsMatchKey(b.Replace("*", string.Empty));
+
+    private static string CommentSpan(string author, string comment) => $"{{>>{author}: {SafeComment(comment)}<<}}";
+
+    private static string SafeComment(string comment) => comment.Replace("<<", "«").Replace("}", ")");
 
     /// <summary>ours → theirs as CriticMarkup; accepting takes theirs, rejecting keeps ours.</summary>
     private static string ConflictToken(string ours, string theirs)
@@ -406,13 +457,39 @@ public static class ManuscriptMerger
 
         public void AddFromTheirs(DocumentBlock block, DocumentBlock? keepIdOf = null) => Add(block, theirs, keepIdOf?.ParagraphId ?? block.ParagraphId);
 
-        public void AddMerged(DocumentBlock oursBlock, BlockStyleRole role, string text, List<WordConflict> conflicts)
+        public void AddMerged(DocumentBlock oursBlock, DocumentBlock theirsBlock, BlockStyleRole role, string text, List<WordConflict> conflicts)
         {
             string id = Claim(oursBlock.ParagraphId);
             merged.Blocks.Add(new DocumentBlock { ParagraphId = id, Role = role, Text = text });
+
+            // Pending changes of either side that the merged text still holds.
+            var kept = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (source, fromId) in new[] { (ours, oursBlock.ParagraphId), (theirs, theirsBlock.ParagraphId) })
+            {
+                foreach (var hunk in source.Hunks.Where(h => h.ParagraphId == fromId && h.Status == RevisionHunkStatus.Pending))
+                {
+                    string token = CriticMarkupSerializer.FormatHunkAsCriticMarkup(hunk);
+                    if (token.Length > 0 && text.Contains(token, StringComparison.Ordinal) && kept.Add(token))
+                    {
+                        var copy = hunk.Clone();
+                        copy.ParagraphId = id;
+                        AddHunk(copy);
+                    }
+                }
+            }
+
             int n = 0;
             foreach (var c in conflicts)
             {
+                if (c.Comment != null)
+                {
+                    if (kept.Add(c.Comment))
+                    {
+                        string body = c.Comment[(3 + theirsAuthor.Length + 2)..^3]; // {>>author: body<<}
+                        AddHunk(new RevisionHunk { HunkId = $"{id}-mc", ParagraphId = id, HunkType = RevisionHunkType.Comment, CommentText = body, Author = theirsAuthor, ContextSnippet = DiffEngineService.ToGoogleDocsText(text) });
+                    }
+                    continue;
+                }
                 string o = c.Ours.Trim(), t = c.Theirs.Trim();
                 AddHunk(new RevisionHunk
                 {
@@ -458,14 +535,6 @@ public static class ManuscriptMerger
             AddHunk(new RevisionHunk { HunkId = $"{id}-m01", ParagraphId = id, HunkType = RevisionHunkType.Deletion, OriginalText = text, Author = theirsAuthor, ContextSnippet = DiffEngineService.ToGoogleDocsText(text) });
         }
 
-        public void AddWithComment(DocumentBlock oursBlock, BlockStyleRole role, string comment)
-        {
-            string id = Claim(oursBlock.ParagraphId);
-            merged.Blocks.Add(new DocumentBlock { ParagraphId = id, Role = role, Text = oursBlock.Text.Trim() });
-            CopyHunks(ours, oursBlock.ParagraphId, id);
-            AddComment(id, comment);
-        }
-
         private void Add(DocumentBlock block, ManuscriptDocument source, string preferredId)
         {
             string id = Claim(preferredId);
@@ -488,7 +557,7 @@ public static class ManuscriptMerger
         private void AddComment(string paragraphId, string comment)
         {
             var block = merged.Blocks.Last(b => b.ParagraphId == paragraphId);
-            string safe = comment.Replace("<<", "«").Replace("}", ")");
+            string safe = SafeComment(comment);
             block.Text = $"{block.Text} {{>>{theirsAuthor}: {safe}<<}}";
             AddHunk(new RevisionHunk { HunkId = $"{paragraphId}-mc", ParagraphId = paragraphId, HunkType = RevisionHunkType.Comment, CommentText = safe, Author = theirsAuthor, ContextSnippet = DiffEngineService.ToGoogleDocsText(block.Text) });
         }

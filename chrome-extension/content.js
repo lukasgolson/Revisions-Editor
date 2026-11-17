@@ -103,7 +103,13 @@
     return sendToBackground({ type: "exportDocx", url: exportUrl });
   }
 
-  async function pullDocToEditor() {
+  const REPLACE_CONFIRMATION = "Replace the manuscript in Revisions Editor with this document?\n\nIts text, headings, captions and tables become exactly what this document has; edits made only in Revisions Editor are not merged in. Figures and equations are kept as they are in Revisions Editor (an image here stands for the figure drawn there). The current version is committed first, so it stays in the history.";
+
+  /**
+   * Sends the target tab to Revisions Editor: merged three ways with the edits made there ("merge"), or replacing
+   * the manuscript with this document while keeping the app's figures ("replace").
+   */
+  async function pullDocToEditor(mode = "merge") {
     const info = getDocInfo();
     if (!info) {
       return { ok: false, message: "This page is not a Google Docs document." };
@@ -126,7 +132,8 @@
         tabId: content.tabId,
         tabTitle: content.tabTitle,
         blocks: content.blocks,
-        docxBase64: content.docxBase64
+        docxBase64: content.docxBase64,
+        mode
       }
     });
 
@@ -138,7 +145,10 @@
     const what = content.tabTitle ? `tab '${content.tabTitle}' of '${title}'` : `'${title}'`;
     return {
       ok: true,
-      message: `Sent ${what} to Revisions Editor (commit ${sha}, signed block #${result.data.blockIndex}).${content.note ? " " + content.note : ""}`
+      message: (mode === "replace"
+        ? `Replaced the manuscript with ${what} (commit ${sha}): ${result.data.summary || "figures kept."}`
+        : `Sent ${what} to Revisions Editor (commit ${sha}, signed block #${result.data.blockIndex}).`)
+        + (content.note ? " " + content.note : "")
     };
   }
 
@@ -229,13 +239,24 @@
       pull.disabled = false;
       await refreshPatches();
     });
+    const replace = el("button", "re-button", "Replace manuscript");
+    replace.title = "Make the manuscript in Revisions Editor exactly this document, keeping its figures";
+    replace.addEventListener("click", async () => {
+      if (!window.confirm(REPLACE_CONFIRMATION)) return;
+      replace.disabled = true;
+      setPanelStatus("Replacing the manuscript with this document...");
+      const r = await pullDocToEditor("replace");
+      setPanelStatus(r.message);
+      replace.disabled = false;
+      await refreshPatches();
+    });
     const applyAll = el("button", "re-button re-apply-all", "Apply all");
     applyAll.title = "Apply every merged change to this document";
     applyAll.disabled = true;
     applyAll.addEventListener("click", () => applyToDocument(pendingPatches));
     const refresh = el("button", "re-button", "Refresh");
     refresh.addEventListener("click", refreshPatches);
-    toolbar.append(pull, applyAll, refresh);
+    toolbar.append(pull, replace, applyAll, refresh);
 
     // Which document tab to send and apply to.
     const tabRow = el("label", "re-tab-row");
@@ -327,11 +348,16 @@
       item.append(
         el("div", "re-patch-title", patch.sectionHeading || patch.paragraphId),
         el("div", "re-patch-summary", patch.changeSummary));
-      if (kind !== "Insert") {
-        item.append(el("div", "re-label", kind === "Delete" ? "Paragraph to remove" : "Current text"), el("div", "re-text re-before", patch.beforeText));
-      }
-      if (kind !== "Delete") {
-        item.append(el("div", "re-label", kind === "Insert" ? "New paragraph" : "Merged text"), el("div", "re-text re-after", patch.afterText));
+      const isImage = kind === "ReplaceImage" || kind === "InsertImage";
+      if (isImage) {
+        item.append(el("div", "re-label", kind === "ReplaceImage" ? "Figure image to update" : "New figure"), el("div", "re-text re-after", patch.afterText));
+      } else {
+        if (kind !== "Insert") {
+          item.append(el("div", "re-label", kind === "Delete" ? "Paragraph to remove" : "Current text"), el("div", "re-text re-before", patch.beforeText));
+        }
+        if (kind !== "Delete") {
+          item.append(el("div", "re-label", kind === "Insert" ? "New paragraph" : "Merged text"), el("div", "re-text re-after", patch.afterText));
+        }
       }
       if (lastFailures.has(patch.patchId)) {
         item.append(el("div", "re-failure", lastFailures.get(patch.patchId)));
@@ -342,7 +368,7 @@
       apply.disabled = applying;
       apply.addEventListener("click", () => applyToDocument([patch]));
       const copyAfter = el("button", "re-button", "Copy merged");
-      copyAfter.disabled = kind === "Delete";
+      copyAfter.disabled = kind === "Delete" || isImage;
       copyAfter.addEventListener("click", async () => {
         await navigator.clipboard.writeText(patch.afterText);
         setPanelStatus("Copied the merged text. Select the paragraph and paste (Ctrl+V).");
@@ -461,6 +487,9 @@
         return { ok: true, isDocument: getDocInfo() !== null };
       case "PULL_GOOGLE_DOC_TO_WPF":
         return pullDocToEditor();
+      case "REPLACE_WITH_GOOGLE_DOC":
+        // The popup has asked for confirmation.
+        return pullDocToEditor("replace");
       case "TOGGLE_SYNC_DRAWER":
         return togglePanel();
       case "APPLY_ALL_PATCHES": {
