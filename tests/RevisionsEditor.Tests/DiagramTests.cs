@@ -51,6 +51,23 @@ public sealed partial class RevisionsEditorTests
                     $"{name}: the text '{t.Box.Source}' {b} spills out of block {n.Node.Id} {n.Body}");
             }
         }
+        // Arrows pass no node but their own two, and no group title.
+        foreach (var e in layout.Edges)
+        {
+            for (int k = 0; k + 1 < e.Points.Count; k++)
+            {
+                var (a, b) = (e.Points[k], e.Points[k + 1]);
+                var segment = new DiagramRect(Math.Min(a.X, b.X) - 0.5, Math.Min(a.Y, b.Y) - 0.5, Math.Abs(b.X - a.X) + 1, Math.Abs(b.Y - a.Y) + 1);
+                foreach (var n in layout.Nodes.Where(n => n.Node.Id != e.Edge.From && n.Node.Id != e.Edge.To))
+                {
+                    Assert.False(segment.Intersects(n.Body, tolerance: 1.5), $"{name}: the arrow {e.Edge.From} -> {e.Edge.To} crosses {n.Node.Id}");
+                }
+                foreach (var g in layout.Groups.Where(g => g.Title != null))
+                {
+                    Assert.False(segment.Intersects(g.Title!.Bounds, tolerance: 1), $"{name}: the arrow {e.Edge.From} -> {e.Edge.To} crosses the title of group {g.Group.Id}");
+                }
+            }
+        }
         // Group titles sit outside every node, and frames do not cut through nodes outside the group.
         foreach (var g in layout.Groups)
         {

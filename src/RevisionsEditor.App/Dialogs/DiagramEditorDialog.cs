@@ -255,6 +255,7 @@ public sealed class DiagramEditorDialog : Window
                 group  id "Title" a b c             a frame round nodes (dotted, shaded)
                 a -> b -> c                         arrows (--> dashed, ..> dotted, -- line)
                   options: label="…"  over | under  (route round the row)
+                layout auto   direction right|down   placed from the arrows (flowcharts)
                 font "Times New Roman"   size 16   gap 34
                 Text between $…$ is LaTeX math: \frac{H}{4}, x^2, \mathbb{R}, \to, \times.
                 """

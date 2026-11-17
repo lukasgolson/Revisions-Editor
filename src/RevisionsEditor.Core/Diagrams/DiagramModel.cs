@@ -113,6 +113,13 @@ public sealed class Diagram
     public double FontSize { get; set; } = 16;
     /// <summary>Horizontal space between columns.</summary>
     public double Gap { get; set; } = 34;
+    /// <summary>
+    /// "layout auto": placed automatically from the arrows (a layered layout, as for flowcharts) instead of on the
+    /// grid the statements describe.
+    /// </summary>
+    public bool AutoLayout { get; set; }
+    /// <summary>Which way an automatic layout flows: "right" (left to right) or "down".</summary>
+    public string Direction { get; set; } = "right";
 
     public IEnumerable<DiagramNode> Nodes => Statements.OfType<DiagramNodeStatement>().Select(s => s.Node);
     public IEnumerable<DiagramGroup> Groups => Statements.OfType<DiagramGroupStatement>().Select(s => s.Group);
@@ -244,6 +251,28 @@ public static class DiagramSource
         var first = tokens[0];
         string keyword = first.Kind == "word" ? first.Value.ToLowerInvariant() : string.Empty;
 
+        if (keyword is "layout" or "direction")
+        {
+            string value = tokens.ElementAtOrDefault(1)?.Value.ToLowerInvariant() ?? string.Empty;
+            switch (keyword, value)
+            {
+                case ("layout", "auto" or "grid"):
+                    diagram.AutoLayout = value == "auto";
+                    break;
+                case ("direction", "right" or "lr" or "left-right"):
+                    diagram.Direction = "right";
+                    break;
+                case ("direction", "down" or "td" or "tb" or "top-down"):
+                    diagram.Direction = "down";
+                    break;
+                default:
+                    throw new FormatException(keyword == "layout"
+                        ? "“layout” is grid (placed as written) or auto (placed from the arrows)."
+                        : "“direction” is right or down.");
+            }
+            return new DiagramSettingStatement(keyword, value);
+        }
+
         if (keyword is "font" or "size" or "gap")
         {
             if (tokens.Count < 2) throw new FormatException($"“{keyword}” needs a value.");
@@ -272,7 +301,7 @@ public static class DiagramSource
             return ParseChain(tokens);
         }
 
-        throw new FormatException($"Unknown statement “{first.Value}”. Start a line with block, tensor, op, text, group, or write an arrow such as a -> b.");
+        throw new FormatException($"Unknown statement “{first.Value}”. Start a line with block, tensor, op, text, group, layout, direction, or write an arrow such as a -> b.");
     }
 
     private static double Number(string value, string what)

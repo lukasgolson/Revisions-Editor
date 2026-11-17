@@ -53,6 +53,28 @@ public static class DiagramTemplates
             x --> add over
             """),
 
+        new("Workflow (laid out automatically)", "A processing workflow with branches: only the arrows are written, and the layout is found automatically.", """
+            # Processing workflow: "layout auto" places the steps from the arrows (no rows or columns to give).
+            layout auto
+            direction right
+            text   video  "Drone video" bold
+            block  frames "Frame extraction" "3 fps, undistorted"
+            block  dedode "DeDoDe V2" "2,048 keypoints"
+            block  dino   "DINOv3 hypercolumn" "$1024$-D descriptors"
+            block  adapt  "Adaptor" "$256$-D descriptors"
+            block  match  "LightGlue" "Matching"
+            block  sfm    "Global SfM" "PyTheia, bundle adjustment"
+            block  mvs    "Dense MVS" "COLMAP"
+            tensor cloud  "Point cloud" flat
+
+            group features "Feature detection and description" dedode dino adapt dashed
+
+            video -> frames
+            frames -> dedode -> adapt
+            frames -> dino -> adapt
+            adapt -> match -> sfm -> mvs -> cloud
+            """),
+
         new("Two-branch fusion", "Two descriptors fused, a residual feed-forward layer and a matcher (like an adaptor network).", """
             # Adaptor network
             tensor dino  "DINOv3" "1024-D"

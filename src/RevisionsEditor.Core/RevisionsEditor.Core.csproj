@@ -14,5 +14,7 @@
     <!-- Git inside the app (libgit2): launching git.exe costs from a quarter to a full second per command on
          managed Windows machines. The git program is still used to fetch from and push to GitHub. -->
     <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
+    <!-- Layered graph layout with crossing minimisation and routed edges (Microsoft Research MSAGL), for diagrams laid out automatically ("layout auto"). -->
+    <PackageReference Include="AutomaticGraphLayout" Version="1.1.12" />
   </ItemGroup>
 </Project>

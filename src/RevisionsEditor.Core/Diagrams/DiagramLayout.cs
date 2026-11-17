@@ -189,6 +189,10 @@ public static class DiagramLayout
     /// </summary>
     public static DiagramLayoutResult Layout(Diagram diagram)
     {
+        if (diagram.AutoLayout)
+        {
+            return DiagramAutoLayout.Layout(diagram);
+        }
         var hugging = new HashSet<int>();
         var result = LayoutPass(diagram, hugging, out var fits);
         hugging = fits;
@@ -232,83 +236,12 @@ public static class DiagramLayout
         foreach (var node in diagram.Nodes)
         {
             if (!grid.TryGetValue(node.Id, out var cell)) continue;
-            var layout = new DiagramNodeLayout { Node = node, Row = cell.Row, Column = cell.Column };
-            layouts[node.Id] = layout;
-            var captions = new List<DiagramTextBox>();
-            double w, up, down;
-            switch (node.Kind)
-            {
-                case DiagramNodeKind.Tensor:
-                {
-                    var (fw, fh, depth) = node.Shape switch
-                    {
-                        "thin" => (fs * 0.65, fs * 5.2, fs * 0.7),
-                        "deep" => (fs * 1.7, fs * 6.0, fs * 3.4),
-                        "flat" => (fs * 3.5, fs * 1.2, fs * 1.0),
-                        _ => (fs * 1.6, fs * 4.6, fs * 1.6)
-                    };
-                    double dy = depth * 0.75;
-                    layout.Depth = depth;
-                    w = fw + depth;
-                    up = fh / 2 + dy;
-                    down = fh / 2;
-                    layout.Front = new DiagramRect(0, 0, fw, fh);
-                    if (node.Title.Length > 0) captions.Add(DiagramText.Layout(node.Title, family, fs * 0.95, node.IsTitleBold));
-                    if (node.Subtitle.Length > 0) captions.Add(DiagramText.Layout(node.Subtitle, family, fs * 0.85, false));
-                    break;
-                }
-                case DiagramNodeKind.Op:
-                {
-                    double r = fs * 0.75;
-                    if (node.Title is not ("add" or "mul" or "times" or "concat"))
-                    {
-                        var symbol = DiagramText.Layout(node.Title, family, fs, node.IsTitleBold);
-                        r = Math.Max(r, Math.Max(symbol.Width, symbol.Height) / 2 + fs * 0.3);
-                        layout.Texts.Add(new DiagramPlacedText(symbol, 0, 0));
-                    }
-                    w = 2 * r;
-                    up = down = r;
-                    if (node.Subtitle.Length > 0) captions.Add(DiagramText.Layout(node.Subtitle, family, fs * 0.85, false));
-                    break;
-                }
-                case DiagramNodeKind.Text:
-                {
-                    var title = DiagramText.Layout(node.Title, family, fs, node.IsTitleBold);
-                    var sub = node.Subtitle.Length > 0 ? DiagramText.Layout(node.Subtitle, family, fs * 0.85, false) : null;
-                    double h = title.Height + (sub != null ? fs * 0.35 + sub.Height : 0);
-                    w = Math.Max(title.Width, sub?.Width ?? 0) + fs * 0.3;
-                    layout.Texts.Add(new DiagramPlacedText(title, 0, 0));
-                    if (sub != null) layout.Texts.Add(new DiagramPlacedText(sub, 0, 0));
-                    // Arrows meet text at its first line.
-                    up = title.Ascent * 0.75 + fs * 0.15;
-                    down = h - up + fs * 0.15;
-                    break;
-                }
-                default:
-                {
-                    var title = DiagramText.Layout(node.Title, family, fs, node.IsTitleBold);
-                    var sub = node.Subtitle.Length > 0 ? DiagramText.Layout(node.Subtitle, family, fs * 0.85, false) : null;
-                    double padX = fs * 0.9, padY = fs * 0.75;
-                    double textH = title.Height + (sub != null ? fs * 0.45 + sub.Height : 0);
-                    w = Math.Max(Math.Max(title.Width, sub?.Width ?? 0) + 2 * padX, node.MinWidth ?? fs * 5.5);
-                    double h = Math.Max(textH + 2 * padY, fs * 3.8);
-                    layout.Texts.Add(new DiagramPlacedText(title, 0, 0));
-                    if (sub != null) layout.Texts.Add(new DiagramPlacedText(sub, 0, 0));
-                    up = down = h / 2;
-                    break;
-                }
-            }
-            if (node.Caption.Length > 0)
-            {
-                foreach (string line in node.Caption.Split("\\n"))
-                {
-                    captions.Add(DiagramText.Layout(line, family, fs * 0.85, false));
-                }
-            }
-            captionBoxes[node.Id] = captions;
-            width[node.Id] = w;
-            above[node.Id] = up;
-            below[node.Id] = down;
+            var m = Measure(node, cell.Row, cell.Column, family, fs);
+            layouts[node.Id] = m.Layout;
+            captionBoxes[node.Id] = m.Captions;
+            width[node.Id] = m.Width;
+            above[node.Id] = m.Above;
+            below[node.Id] = m.Below;
         }
 
         // Blocks in a row share one height, as in a drawn pipeline.
@@ -502,41 +435,9 @@ public static class DiagramLayout
             double port = l.Node.EffectiveSpan == 1 ? portY[l.Row] : (portY[l.Row] + portY[l.Row + l.Node.EffectiveSpan - 1]) / 2;
             double w = width[id];
             double left = colX[l.Column] + (colWidth[l.Column] - w) / 2;
-            l.PortY = port;
-            l.Body = new DiagramRect(left, port - above[id], w, above[id] + below[id]);
-            switch (l.Node.Kind)
-            {
-                case DiagramNodeKind.Tensor:
-                    l.Front = new DiagramRect(left, port - l.Front.Height / 2, l.Front.Width, l.Front.Height);
-                    break;
-                case DiagramNodeKind.Op:
-                    for (int i = 0; i < l.Texts.Count; i++)
-                    {
-                        var t = l.Texts[i].Box;
-                        l.Texts[i] = new DiagramPlacedText(t, l.Body.CenterX - t.Width / 2, port + (t.Ascent - t.Descent) / 2);
-                    }
-                    break;
-                default:
-                {
-                    // Title and subtitle centred in the box (text: from the top).
-                    double total = l.Texts.Sum(t => t.Box.Height) + (l.Texts.Count > 1 ? fs * (l.Node.Kind == DiagramNodeKind.Text ? 0.35 : 0.45) : 0);
-                    double top = l.Node.Kind == DiagramNodeKind.Text ? l.Body.Y + fs * 0.15 : l.Body.CenterY - total / 2;
-                    for (int i = 0; i < l.Texts.Count; i++)
-                    {
-                        var t = l.Texts[i].Box;
-                        l.Texts[i] = new DiagramPlacedText(t, l.Body.CenterX - t.Width / 2, top + t.Ascent);
-                        top += t.Height + fs * (l.Node.Kind == DiagramNodeKind.Text ? 0.35 : 0.45);
-                    }
-                    break;
-                }
-            }
             // Captions line up across a row, under the tallest node.
-            double captionTop = l.Node.EffectiveSpan == 1 ? portY[l.Row] + bodyBelow[l.Row] + captionGap : l.Body.Bottom + captionGap;
-            foreach (var c in captionBoxes[id])
-            {
-                l.Captions.Add(new DiagramPlacedText(c, l.Body.X + (l.Node.Kind == DiagramNodeKind.Tensor ? l.Front.Width / 2 + l.Depth / 2 : l.Body.Width / 2) - c.Width / 2, captionTop + c.Ascent));
-                captionTop += c.Height + captionLine;
-            }
+            double captionTop = l.Node.EffectiveSpan == 1 ? portY[l.Row] + bodyBelow[l.Row] + captionGap : port + below[id] + captionGap;
+            Place(new MeasuredNode(l, w, above[id], below[id], captionBoxes[id]), left, port, captionTop, fs);
             result.Nodes.Add(l);
         }
 
@@ -723,7 +624,13 @@ public static class DiagramLayout
             result.Groups.Add(layout);
         }
 
-        // ---- Bounds --------------------------------------------------------------------------------
+        Frame(result, margin);
+        return result;
+    }
+
+    /// <summary>Moves everything drawn to <paramref name="margin"/> from the top left and sizes the drawing to fit.</summary>
+    internal static void Frame(DiagramLayoutResult result, double margin)
+    {
         var bounds = new DiagramRect();
         foreach (var n in result.Nodes) bounds = bounds.Union(n.Bounds);
         foreach (var g in result.Groups) bounds = bounds.Union(g.Box).Union(g.Title?.Bounds ?? default);
@@ -735,7 +642,6 @@ public static class DiagramLayout
         Shift(result, margin - bounds.X, margin - bounds.Y);
         result.Width = bounds.Width + 2 * margin;
         result.Height = bounds.Height + 2 * margin;
-        return result;
     }
 
     /// <summary>The node the first plain arrow out of <paramref name="from"/> goes to, in the same row.</summary>
@@ -745,6 +651,131 @@ public static class DiagramLayout
             .Select(e => layouts[e.To])
             .Where(t => t.Column == from.Column + 1 && (Covers(t, from.Row) || Covers(from, t.Row)))
             .FirstOrDefault();
+
+    /// <summary>A node measured: its layout (texts not yet placed), width, and extent above and below its port line.</summary>
+    internal sealed record MeasuredNode(DiagramNodeLayout Layout, double Width, double Above, double Below, List<DiagramTextBox> Captions)
+    {
+        /// <summary>Height of the captions under the node, with the gap above them.</summary>
+        public double CaptionHeight(double fs) => Captions.Count == 0 ? 0 : fs * 0.45 + Captions.Sum(c => c.Height) + fs * 0.2 * (Captions.Count - 1);
+        public double CaptionWidth => Captions.Count == 0 ? 0 : Captions.Max(c => c.Width);
+    }
+
+    /// <summary>Measures a node: the shape it draws and its texts, set in the diagram's font.</summary>
+    internal static MeasuredNode Measure(DiagramNode node, int row, int column, string family, double fs)
+    {
+        var layout = new DiagramNodeLayout { Node = node, Row = row, Column = column };
+        var captions = new List<DiagramTextBox>();
+        double w, up, down;
+        switch (node.Kind)
+        {
+            case DiagramNodeKind.Tensor:
+            {
+                var (fw, fh, depth) = node.Shape switch
+                {
+                    "thin" => (fs * 0.65, fs * 5.2, fs * 0.7),
+                    "deep" => (fs * 1.7, fs * 6.0, fs * 3.4),
+                    "flat" => (fs * 3.5, fs * 1.2, fs * 1.0),
+                    _ => (fs * 1.6, fs * 4.6, fs * 1.6)
+                };
+                double dy = depth * 0.75;
+                layout.Depth = depth;
+                w = fw + depth;
+                up = fh / 2 + dy;
+                down = fh / 2;
+                layout.Front = new DiagramRect(0, 0, fw, fh);
+                if (node.Title.Length > 0) captions.Add(DiagramText.Layout(node.Title, family, fs * 0.95, node.IsTitleBold));
+                if (node.Subtitle.Length > 0) captions.Add(DiagramText.Layout(node.Subtitle, family, fs * 0.85, false));
+                break;
+            }
+            case DiagramNodeKind.Op:
+            {
+                double r = fs * 0.75;
+                if (node.Title is not ("add" or "mul" or "times" or "concat"))
+                {
+                    var symbol = DiagramText.Layout(node.Title, family, fs, node.IsTitleBold);
+                    r = Math.Max(r, Math.Max(symbol.Width, symbol.Height) / 2 + fs * 0.3);
+                    layout.Texts.Add(new DiagramPlacedText(symbol, 0, 0));
+                }
+                w = 2 * r;
+                up = down = r;
+                if (node.Subtitle.Length > 0) captions.Add(DiagramText.Layout(node.Subtitle, family, fs * 0.85, false));
+                break;
+            }
+            case DiagramNodeKind.Text:
+            {
+                var title = DiagramText.Layout(node.Title, family, fs, node.IsTitleBold);
+                var sub = node.Subtitle.Length > 0 ? DiagramText.Layout(node.Subtitle, family, fs * 0.85, false) : null;
+                double h = title.Height + (sub != null ? fs * 0.35 + sub.Height : 0);
+                w = Math.Max(title.Width, sub?.Width ?? 0) + fs * 0.3;
+                layout.Texts.Add(new DiagramPlacedText(title, 0, 0));
+                if (sub != null) layout.Texts.Add(new DiagramPlacedText(sub, 0, 0));
+                // Arrows meet text at its first line.
+                up = title.Ascent * 0.75 + fs * 0.15;
+                down = h - up + fs * 0.15;
+                break;
+            }
+            default:
+            {
+                var title = DiagramText.Layout(node.Title, family, fs, node.IsTitleBold);
+                var sub = node.Subtitle.Length > 0 ? DiagramText.Layout(node.Subtitle, family, fs * 0.85, false) : null;
+                double padX = fs * 0.9, padY = fs * 0.75;
+                double textH = title.Height + (sub != null ? fs * 0.45 + sub.Height : 0);
+                w = Math.Max(Math.Max(title.Width, sub?.Width ?? 0) + 2 * padX, node.MinWidth ?? fs * 5.5);
+                double h = Math.Max(textH + 2 * padY, fs * 3.8);
+                layout.Texts.Add(new DiagramPlacedText(title, 0, 0));
+                if (sub != null) layout.Texts.Add(new DiagramPlacedText(sub, 0, 0));
+                up = down = h / 2;
+                break;
+            }
+        }
+        if (node.Caption.Length > 0)
+        {
+            foreach (string line in node.Caption.Split("\\n"))
+            {
+                captions.Add(DiagramText.Layout(line, family, fs * 0.85, false));
+            }
+        }
+        return new MeasuredNode(layout, w, up, down, captions);
+    }
+
+    /// <summary>Places a measured node: its shape from <paramref name="left"/> around the port line, its texts, and its captions from <paramref name="captionTop"/>.</summary>
+    internal static void Place(MeasuredNode m, double left, double port, double captionTop, double fs)
+    {
+        var l = m.Layout;
+        l.PortY = port;
+        l.Body = new DiagramRect(left, port - m.Above, m.Width, m.Above + m.Below);
+        switch (l.Node.Kind)
+        {
+            case DiagramNodeKind.Tensor:
+                l.Front = new DiagramRect(left, port - l.Front.Height / 2, l.Front.Width, l.Front.Height);
+                break;
+            case DiagramNodeKind.Op:
+                for (int i = 0; i < l.Texts.Count; i++)
+                {
+                    var t = l.Texts[i].Box;
+                    l.Texts[i] = new DiagramPlacedText(t, l.Body.CenterX - t.Width / 2, port + (t.Ascent - t.Descent) / 2);
+                }
+                break;
+            default:
+            {
+                // Title and subtitle centred in the box (text: from the top).
+                double total = l.Texts.Sum(t => t.Box.Height) + (l.Texts.Count > 1 ? fs * (l.Node.Kind == DiagramNodeKind.Text ? 0.35 : 0.45) : 0);
+                double top = l.Node.Kind == DiagramNodeKind.Text ? l.Body.Y + fs * 0.15 : l.Body.CenterY - total / 2;
+                for (int i = 0; i < l.Texts.Count; i++)
+                {
+                    var t = l.Texts[i].Box;
+                    l.Texts[i] = new DiagramPlacedText(t, l.Body.CenterX - t.Width / 2, top + t.Ascent);
+                    top += t.Height + fs * (l.Node.Kind == DiagramNodeKind.Text ? 0.35 : 0.45);
+                }
+                break;
+            }
+        }
+        foreach (var c in m.Captions)
+        {
+            l.Captions.Add(new DiagramPlacedText(c, l.Body.X + (l.Node.Kind == DiagramNodeKind.Tensor ? l.Front.Width / 2 + l.Depth / 2 : l.Body.Width / 2) - c.Width / 2, captionTop + c.Ascent));
+            captionTop += c.Height + fs * 0.2;
+        }
+    }
 
     private static bool Covers(DiagramNodeLayout n, int row) => row >= n.Row && row < n.Row + n.Node.EffectiveSpan;
 
