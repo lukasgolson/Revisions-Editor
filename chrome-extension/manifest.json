@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Revisions Editor Bridge",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Sends Google Docs manuscripts to the Revisions Editor desktop app and applies merged review edits back to Google Docs.",
   "permissions": [
     "activeTab",
@@ -13,6 +13,7 @@
   "host_permissions": [
     "https://docs.google.com/*",
     "https://docs.googleapis.com/*",
+    "https://www.googleapis.com/*",
     "https://*.googleusercontent.com/*",
     "http://127.0.0.1:17420/*"
   ],

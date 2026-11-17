@@ -285,6 +285,17 @@ public sealed class LocalBridgeServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Saves what the Google Doc now holds as the snapshot later merges and patches start from, noting which version
+    /// of each figure's file it shows (only in the snapshot: the manuscript's figures are left as they are).
+    /// </summary>
+    private static void SaveSnapshot(GitRepositoryService repo, ManuscriptDocument pulled)
+    {
+        var snapshot = pulled.Clone();
+        GoogleDocsFigures.MarkShown(snapshot, repo.WorkspacePath);
+        repo.SaveGoogleDocsBaseline(snapshot);
+    }
+
     /// <summary>Whether a Google Docs snapshot is of the same document and tab as a pull.</summary>
     private static bool IsSameSource(ManuscriptDocument snapshot, ManuscriptDocument pulled)
         => (snapshot.GoogleDocId == null || pulled.GoogleDocId == null || string.Equals(snapshot.GoogleDocId, pulled.GoogleDocId, StringComparison.Ordinal))
@@ -342,6 +353,7 @@ public sealed class LocalBridgeServer : IDisposable
         }
 
         var fresh = DiffEngineService.GenerateGoogleDocPatches(baseline, current);
+        fresh.AddRange(GoogleDocsFigures.Patches(baseline, current, repo.WorkspacePath));
         foreach (var p in fresh)
         {
             var prev = _pendingPatches.FirstOrDefault(old => old.PatchId == p.PatchId);
@@ -513,7 +525,7 @@ public sealed class LocalBridgeServer : IDisposable
                         // The Google Doc and the manuscript may both have changed since the last pull (edits
                         // made here, or merged from another computer). Merge three ways against the version
                         // last seen in Google Docs so neither side's edits are lost.
-                        var baseline = repo.LoadGoogleDocsBaseline();
+                        var baseline = repo.LoadGoogleDocsBaseline() is { } saved ? GoogleDocsFigures.WithoutShown(saved) : null;
                         if (baseline != null && !IsSameSource(baseline, pulledDoc))
                         {
                             baseline = null; // a snapshot of another document or tab is not where this one started
@@ -534,7 +546,7 @@ public sealed class LocalBridgeServer : IDisposable
                             toCommit.Title = titleBlock != null ? DiffEngineService.ToGoogleDocsText(titleBlock.Text) : pulledDoc.Title;
                         }
                     }
-                    repo.SaveGoogleDocsBaseline(pulledDoc);
+                    SaveSnapshot(repo, pulledDoc);
                     string conflictNote = merge is { Conflicts: > 0 } ? $", {merge.Conflicts} conflicting edits left as pending changes" : string.Empty;
                     (sha, block) = repo.CommitSnapshot(
                         toCommit,
@@ -569,6 +581,26 @@ public sealed class LocalBridgeServer : IDisposable
                     blockIndex = block.BlockIndex,
                     blockHash = block.BlockHash
                 });
+                return;
+            }
+
+            if (req.HttpMethod == "GET" && path == "/api/google-docs/figure")
+            {
+                // A figure's image for a pending image patch (only those: nothing else of the workspace is served).
+                string? wanted = req.QueryString["path"];
+                bool pending = wanted != null && _pendingPatches.Any(p => p.Kind is GoogleDocPatchKind.ReplaceImage or GoogleDocPatchKind.InsertImage
+                    && string.Equals(p.ImagePath, wanted, StringComparison.Ordinal));
+                var image = pending ? GoogleDocsFigures.ImageFor(repo.WorkspacePath, wanted!) : null;
+                if (image is not { } found)
+                {
+                    await WriteJsonResponseAsync(res, 404, new { error = "No such figure is waiting to be sent." });
+                    return;
+                }
+                res.StatusCode = 200;
+                res.ContentType = found.ContentType;
+                res.ContentLength64 = found.Bytes.Length;
+                await res.OutputStream.WriteAsync(found.Bytes);
+                res.Close();
                 return;
             }
 
@@ -622,7 +654,7 @@ public sealed class LocalBridgeServer : IDisposable
 
                 lock (repo.SyncRoot)
                 {
-                    repo.SaveGoogleDocsBaseline(BuildPulledDocument(payload, repo, out _));
+                    SaveSnapshot(repo, BuildPulledDocument(payload, repo, out _));
                 }
 
                 var previous = _pendingPatches;

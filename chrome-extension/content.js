@@ -348,11 +348,16 @@
       item.append(
         el("div", "re-patch-title", patch.sectionHeading || patch.paragraphId),
         el("div", "re-patch-summary", patch.changeSummary));
-      if (kind !== "Insert") {
-        item.append(el("div", "re-label", kind === "Delete" ? "Paragraph to remove" : "Current text"), el("div", "re-text re-before", patch.beforeText));
-      }
-      if (kind !== "Delete") {
-        item.append(el("div", "re-label", kind === "Insert" ? "New paragraph" : "Merged text"), el("div", "re-text re-after", patch.afterText));
+      const isImage = kind === "ReplaceImage" || kind === "InsertImage";
+      if (isImage) {
+        item.append(el("div", "re-label", kind === "ReplaceImage" ? "Figure image to update" : "New figure"), el("div", "re-text re-after", patch.afterText));
+      } else {
+        if (kind !== "Insert") {
+          item.append(el("div", "re-label", kind === "Delete" ? "Paragraph to remove" : "Current text"), el("div", "re-text re-before", patch.beforeText));
+        }
+        if (kind !== "Delete") {
+          item.append(el("div", "re-label", kind === "Insert" ? "New paragraph" : "Merged text"), el("div", "re-text re-after", patch.afterText));
+        }
       }
       if (lastFailures.has(patch.patchId)) {
         item.append(el("div", "re-failure", lastFailures.get(patch.patchId)));
@@ -363,7 +368,7 @@
       apply.disabled = applying;
       apply.addEventListener("click", () => applyToDocument([patch]));
       const copyAfter = el("button", "re-button", "Copy merged");
-      copyAfter.disabled = kind === "Delete";
+      copyAfter.disabled = kind === "Delete" || isImage;
       copyAfter.addEventListener("click", async () => {
         await navigator.clipboard.writeText(patch.afterText);
         setPanelStatus("Copied the merged text. Select the paragraph and paste (Ctrl+V).");

@@ -140,7 +140,11 @@ public enum GoogleDocPatchKind
     /// <summary>Insert a new paragraph (AfterText) after the paragraph whose text is AnchorText, or at the start when it is empty.</summary>
     Insert,
     /// <summary>Remove the paragraph whose text is BeforeText.</summary>
-    Delete
+    Delete,
+    /// <summary>Replace the figure image at ImageOrdinal (images counted in document order) with ImagePath's image, at its width.</summary>
+    ReplaceImage,
+    /// <summary>Insert ImagePath's image and its caption (AfterText) after the paragraph whose text is AnchorText.</summary>
+    InsertImage
 }
 
 public sealed class GoogleDocPatch
@@ -159,4 +163,10 @@ public sealed class GoogleDocPatch
     public string AnchorText { get; set; } = string.Empty;
     public string ChangeSummary { get; set; } = string.Empty;
     public bool AppliedInGoogleDocs { get; set; }
+    /// <summary>For an image: which image of the Google Doc (0 is the first) to replace; -1 for a new one.</summary>
+    public int ImageOrdinal { get; set; } = -1;
+    /// <summary>For an image: the figure's file in the workspace (the bridge serves it at /api/google-docs/figure).</summary>
+    public string ImagePath { get; set; } = string.Empty;
+    /// <summary>For an image: its width in Google Docs, in points.</summary>
+    public double ImageWidthPt { get; set; }
 }

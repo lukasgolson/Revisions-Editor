@@ -82,7 +82,9 @@ async function exportDocx(exportUrl) {
 
 importScripts("docs-apply.js");
 
-const DOCS_SCOPE = "https://www.googleapis.com/auth/documents";
+// Docs to read and edit the document; drive.file to put figure images in Drive for a moment while they are inserted
+// (only files this extension creates: nothing else in Drive is visible to it).
+const DOCS_SCOPE = "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.file";
 const TOKEN_KEY = "googleAccessToken";
 
 async function getClientId() {
@@ -211,7 +213,13 @@ async function withDocsApi(call, { interactive = true } = {}) {
 }
 
 async function applyPatchesToDocument(documentId, tabId, patches) {
-  const outcome = await withDocsApi((token) => DocsApply.applyPatches({ token, documentId, tabId, patches }));
+  // Figure images come from the desktop app.
+  const imageSource = async (patch) => {
+    const res = await fetch(`${BRIDGE_URL}/api/google-docs/figure?path=${encodeURIComponent(patch.imagePath)}`, { signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS) });
+    if (!res.ok) throw new Error("Revisions Editor did not send this figure's image.");
+    return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: res.headers.get("Content-Type") || "image/png" };
+  };
+  const outcome = await withDocsApi((token) => DocsApply.applyPatches({ token, documentId, tabId, patches, imageSource }));
   if (!outcome.ok) {
     return outcome;
   }
