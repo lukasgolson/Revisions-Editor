@@ -4,6 +4,7 @@ const DOC_URL_PATTERN = /^https:\/\/docs\.google\.com\/document\/(?:u\/\d+\/)?d\
 
 const statusBox = document.getElementById("statusBox");
 const pullButton = document.getElementById("pullDocBtn");
+const replaceButton = document.getElementById("replaceBtn");
 const panelButton = document.getElementById("toggleDrawerBtn");
 const messageBox = document.getElementById("message");
 const applyButton = document.getElementById("applyBtn");
@@ -138,6 +139,14 @@ pullButton.addEventListener("click", async () => {
   pullButton.disabled = false;
 });
 
+replaceButton.addEventListener("click", async () => {
+  if (!window.confirm("Replace the manuscript in Revisions Editor with this document?\n\nIts text, headings, captions and tables become exactly what this document has; edits made only in Revisions Editor are not merged in. Figures and equations are kept as they are in Revisions Editor (an image here stands for the figure drawn there). The current version is committed first, so it stays in the history.")) return;
+  replaceButton.disabled = true;
+  await runOnDocTab({ action: "REPLACE_WITH_GOOGLE_DOC" }, "Replacing the manuscript with this document...");
+  await checkBridgeStatus();
+  replaceButton.disabled = false;
+});
+
 panelButton.addEventListener("click", async () => {
   const response = await runOnDocTab({ action: "TOGGLE_SYNC_DRAWER" }, "");
   if (response && response.ok) {
@@ -184,6 +193,7 @@ document.getElementById("saveClientId").addEventListener("click", async () => {
 
   const [tab, bridgeReady] = await Promise.all([getActiveDocTab(), checkBridgeStatus()]);
   pullButton.disabled = !tab;
+  replaceButton.disabled = !tab;
   panelButton.disabled = !tab;
   applyButton.disabled = !tab || !bridgeReady;
   if (tab) {
@@ -193,5 +203,6 @@ document.getElementById("saveClientId").addEventListener("click", async () => {
     showMessage("Switch to a Google Docs document to send it to Revisions Editor.");
   } else if (!bridgeReady) {
     pullButton.disabled = true;
+    replaceButton.disabled = true;
   }
 })();

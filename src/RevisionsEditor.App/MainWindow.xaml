@@ -133,6 +133,7 @@
                 <MenuItem Command="app:AppCommands.InsertNumber" Header="Linked _Number..."/>
                 <Separator/>
                 <MenuItem Command="app:AppCommands.InsertFigure" Header="_Figure..."/>
+                <MenuItem Command="app:AppCommands.InsertDiagram" Header="_Diagram..."/>
                 <MenuItem Command="app:AppCommands.InsertTable" Header="_Table..."/>
                 <MenuItem Command="app:AppCommands.InsertEquation" Header="_Equation..."/>
                 <Separator/>
@@ -380,6 +381,7 @@
                                         <Button Content="Ref" Command="app:AppCommands.InsertCrossReference" Focusable="False" Margin="4,0,0,0" ToolTip="Refer to a figure, table, equation or section (Ctrl+Alt+R)"/>
                                         <Button Content="Number" Command="app:AppCommands.InsertNumber" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a number linked to the analysis results (Ctrl+Alt+N)"/>
                                         <Button Content="Figure" Command="app:AppCommands.InsertFigure" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a figure (Ctrl+Alt+F)"/>
+                                        <Button Content="Diagram" Command="app:AppCommands.InsertDiagram" Focusable="False" Margin="4,0,0,0" ToolTip="Draw a block diagram: a pipeline or a network architecture (Ctrl+Alt+G)"/>
                                         <Button Content="Table" Command="app:AppCommands.InsertTable" Focusable="False" Margin="4,0,0,0" ToolTip="Insert a table from a CSV file (Ctrl+Alt+T)"/>
                                         <Button Content="Equation" Command="app:AppCommands.InsertEquation" Focusable="False" Margin="4,0,0,0" ToolTip="Insert an equation (Ctrl+Alt+Q)"/>
                                         <ToggleButton x:Name="PreviewToggle" Content="Preview" Focusable="False" Margin="10,0,0,0"
@@ -881,6 +883,7 @@
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Style="{StaticResource SecondaryText}" FontWeight="SemiBold" Text="Figures, tables and equations" Margin="4,0,12,0"/>
                                         <Button Content="Figure..." Command="app:AppCommands.InsertFigure"/>
+                                        <Button Content="Diagram..." Command="app:AppCommands.InsertDiagram" Margin="6,0,0,0"/>
                                         <Button Content="Table..." Command="app:AppCommands.InsertTable" Margin="6,0,0,0"/>
                                         <Button Content="Equation..." Command="app:AppCommands.InsertEquation" Margin="6,0,0,0"/>
                                         <Button Content="Edit" Command="app:AppCommands.EditScholarlyItem" CommandParameter="{Binding SelectedItem, ElementName=NumberedItemsGrid}" Margin="12,0,0,0"/>

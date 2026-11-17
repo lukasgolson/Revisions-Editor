@@ -22,6 +22,11 @@ public sealed class GoogleDocsPullPayload
     /// <summary>Paragraphs read from one tab through the Google Docs API (preferred over DocxBase64).</summary>
     public List<GoogleDocsPulledBlock>? Blocks { get; set; }
     public string? MarkdownContent { get; set; }
+    /// <summary>
+    /// "merge" (the default): three-way merge with the edits made in the app. "replace": the manuscript becomes the
+    /// Google Doc, keeping the app's own figures (see <see cref="GoogleDocsReplace"/>).
+    /// </summary>
+    public string? Mode { get; set; }
     public string? DocxBase64 { get; set; }
 }
 
@@ -264,6 +269,22 @@ public sealed class LocalBridgeServer : IDisposable
         return doc;
     }
 
+    /// <summary>
+    /// Puts a table's cells from the Google Doc into the manuscript's own file for that table (so it keeps its
+    /// label and file), and removes the file the import wrote them to.
+    /// </summary>
+    private static void MoveTableFiles(GitRepositoryService repo, IEnumerable<(string From, string To)> moves)
+    {
+        string Full(string relative) => Path.Combine(repo.WorkspacePath, relative.Replace('/', Path.DirectorySeparatorChar));
+        foreach (var (from, to) in moves)
+        {
+            if (!File.Exists(Full(from))) continue;
+            Directory.CreateDirectory(Path.GetDirectoryName(Full(to))!);
+            File.Copy(Full(from), Full(to), overwrite: true);
+            File.Delete(Full(from));
+        }
+    }
+
     /// <summary>Whether a Google Docs snapshot is of the same document and tab as a pull.</summary>
     private static bool IsSameSource(ManuscriptDocument snapshot, ManuscriptDocument pulled)
         => (snapshot.GoogleDocId == null || pulled.GoogleDocId == null || string.Equals(snapshot.GoogleDocId, pulled.GoogleDocId, StringComparison.Ordinal))
@@ -464,9 +485,11 @@ public sealed class LocalBridgeServer : IDisposable
 
                 var uncommitted = UncommittedEditsProvider?.Invoke();
 
+                bool replacing = string.Equals(payload.Mode, "replace", StringComparison.OrdinalIgnoreCase);
                 string sha;
                 TextChainBlock block;
                 ManuscriptMergeResult? merge = null;
+                GoogleDocsReplaceResult? replace = null;
                 string? baseNote = null;
                 lock (repo.SyncRoot)
                 {
@@ -476,7 +499,14 @@ public sealed class LocalBridgeServer : IDisposable
                     }
 
                     var toCommit = pulledDoc;
-                    if (repo.HasCommits())
+                    if (replacing && repo.HasCommits())
+                    {
+                        repo.CheckoutBranch(repo.GetMainBranchName());
+                        replace = GoogleDocsReplace.Replace(repo.LoadCurrentWorkingDocument(), pulledDoc);
+                        MoveTableFiles(repo, replace.TableFileMoves);
+                        toCommit = replace.Document;
+                    }
+                    else if (repo.HasCommits())
                     {
                         repo.CheckoutBranch(repo.GetMainBranchName());
 
@@ -508,27 +538,33 @@ public sealed class LocalBridgeServer : IDisposable
                     string conflictNote = merge is { Conflicts: > 0 } ? $", {merge.Conflicts} conflicting edits left as pending changes" : string.Empty;
                     (sha, block) = repo.CommitSnapshot(
                         toCommit,
-                        $"Pull snapshot from Google Docs ('{ConnectedGoogleDocTitle}'{tabNote}{conflictNote})",
+                        replacing
+                            ? $"Replace the manuscript with Google Docs ('{ConnectedGoogleDocTitle}'{tabNote}), keeping its figures"
+                            : $"Pull snapshot from Google Docs ('{ConnectedGoogleDocTitle}'{tabNote}{conflictNote})",
                         repo.AuthorName,
                         AuthorshipOriginSource.HandWrittenInGoogleDocs);
                 }
 
                 if (uncommitted != null)
                 {
-                    BridgeActivityLogged?.Invoke("Committed the edits made here before pulling from Google Docs, so they are merged rather than replaced.");
+                    BridgeActivityLogged?.Invoke(replacing
+                        ? "Committed the edits made here before replacing the manuscript with the Google Doc; they stay in the history."
+                        : "Committed the edits made here before pulling from Google Docs, so they are merged rather than replaced.");
                 }
                 if (baseNote != null)
                 {
                     BridgeActivityLogged?.Invoke($"Google Docs: {baseNote}");
                 }
                 RefreshPendingPatches();
-                string mergeNote = merge != null ? $" — {merge.Summary}" : string.Empty;
+                string mergeNote = replace != null ? $" — {replace.Summary}" : merge != null ? $" — {merge.Summary}" : string.Empty;
                 BridgeActivityLogged?.Invoke($"Pulled '{ConnectedGoogleDocTitle}'{tabNote} from Google Docs -> Commit {sha[..7]} (Block #{block.BlockIndex}){mergeNote}");
                 SnapshotPulledFromGoogleDocs?.Invoke();
 
                 await WriteJsonResponseAsync(res, 200, new
                 {
                     status = "committed",
+                    mode = replacing ? "replace" : "merge",
+                    summary = replace?.Summary ?? merge?.Summary,
                     commitSha = sha,
                     blockIndex = block.BlockIndex,
                     blockHash = block.BlockHash

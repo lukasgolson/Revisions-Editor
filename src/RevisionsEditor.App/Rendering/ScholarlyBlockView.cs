@@ -139,6 +139,17 @@ internal static class ScholarlyBlockView
             return panel;
         }
 
+        if (workspacePath != null && Core.Diagrams.DiagramFiles.SourceOf(figure) is { } diagram)
+        {
+            try
+            {
+                Core.Diagrams.DiagramFiles.RefreshSvg(workspacePath, diagram);
+            }
+            catch (IOException)
+            {
+                // Shown as it was drawn last.
+            }
+        }
         string? path = Resolve(workspacePath, figure.ImagePath);
         if (path == null)
         {

@@ -48,6 +48,7 @@ public static class AppCommands
     public static readonly RoutedUICommand InsertCrossReference = Create("Cross-Reference...", nameof(InsertCrossReference), Key.R, ModifierKeys.Control | ModifierKeys.Alt);
     public static readonly RoutedUICommand InsertFigure = Create("Figure...", nameof(InsertFigure), Key.F, ModifierKeys.Control | ModifierKeys.Alt);
     public static readonly RoutedUICommand InsertTable = Create("Table...", nameof(InsertTable), Key.T, ModifierKeys.Control | ModifierKeys.Alt);
+    public static readonly RoutedUICommand InsertDiagram = Create("Diagram...", nameof(InsertDiagram), Key.G, ModifierKeys.Control | ModifierKeys.Alt);
     public static readonly RoutedUICommand InsertPlaceholder = Create("Placeholder...", nameof(InsertPlaceholder), Key.P, ModifierKeys.Control | ModifierKeys.Alt);
     public static readonly RoutedUICommand NewNote = Create("New Note...", nameof(NewNote), Key.M, ModifierKeys.Control | ModifierKeys.Alt);
     public static readonly RoutedUICommand EditNote = Create("Edit Note...", nameof(EditNote));

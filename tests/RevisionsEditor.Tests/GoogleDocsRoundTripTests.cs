@@ -96,6 +96,7 @@ public sealed partial class RevisionsEditorTests
         public FakeGoogleDoc Docs { get; } = new();
         public GitRepositoryService Repo => repo;
         public LocalBridgeServer Bridge => bridge;
+        public int Port => port;
 
         private async Task PostAsync(string path, object body)
         {

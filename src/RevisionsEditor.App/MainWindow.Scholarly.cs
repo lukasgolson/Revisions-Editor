@@ -50,6 +50,7 @@ public partial class MainWindow
         Bind(AppCommands.InsertNumber, _ => InsertNumber(), workspace);
         Bind(AppCommands.InsertFigure, _ => EditFigure(null), workspace);
         Bind(AppCommands.InsertTable, _ => EditTable(null), workspace);
+        Bind(AppCommands.InsertDiagram, _ => EditDiagram(null), workspace);
         Bind(AppCommands.InsertEquation, _ => EditEquation(null), workspace);
         Bind(AppCommands.EditScholarlyItem, p => EditScholarlyBlock(((NumberedItem)p!).ParagraphId), p => p is NumberedItem);
         Bind(AppCommands.RemoveScholarlyItem, p => RemoveScholarlyItem((NumberedItem)p!), p => p is NumberedItem);
@@ -301,6 +302,11 @@ public partial class MainWindow
     private void EditFigure(DocumentBlock? existing)
     {
         var current = existing != null ? ScholarlyBlocks.ParseFigure(FinalText(existing)) : null;
+        if (current != null && Core.Diagrams.DiagramFiles.SourceOf(current) != null)
+        {
+            EditDiagram(existing);
+            return;
+        }
         var labels = ExistingLabels();
         if (current?.Label != null)
         {
@@ -335,6 +341,51 @@ public partial class MainWindow
                 ShowEditorNotice($"Figure added. Refer to it in the text as @{dialog.Label}.");
             }
         }, "Figure");
+    }
+
+    /// <summary>
+    /// Draws a block diagram for a figure, or edits one: its source is figures/&lt;label&gt;.diagram (named by the
+    /// figure's source= attribute) and the figure shows the SVG drawn from it.
+    /// </summary>
+    private void EditDiagram(DocumentBlock? existing)
+    {
+        var current = existing != null ? ScholarlyBlocks.ParseFigure(FinalText(existing)) : null;
+        string? sourcePath = current != null ? Core.Diagrams.DiagramFiles.SourceOf(current) : null;
+        string? source = null;
+        if (sourcePath != null)
+        {
+            string full = Path.Combine(ViewModel.WorkspacePath, sourcePath.Replace('/', Path.DirectorySeparatorChar));
+            source = File.Exists(full) ? File.ReadAllText(full) : null;
+        }
+        var labels = ExistingLabels();
+        if (current?.Label != null)
+        {
+            labels.Remove(current.Label);
+        }
+        string? after = existing == null ? CaretBlockId() : null;
+        var dialog = new DiagramEditorDialog(current, source, labels) { Owner = this };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        Run(() =>
+        {
+            var (diagramPath, svgPath) = ViewModel.SaveDiagram(sourcePath, dialog.Label, dialog.Source);
+            var attributes = new Dictionary<string, string>(current?.Attributes ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
+            {
+                ["source"] = diagramPath
+            };
+            string text = ScholarlyBlocks.FormatFigure(dialog.Caption, svgPath, dialog.Label, attributes);
+            if (existing != null)
+            {
+                ViewModel.ReplaceBlockText(existing.ParagraphId, text);
+            }
+            else
+            {
+                ViewModel.InsertBlock(new DocumentBlock { ParagraphId = ViewModel.NewParagraphId(), Role = BlockStyleRole.Figure, Text = text }, after);
+                ShowEditorNotice($"Diagram added as a figure. Refer to it in the text as @{dialog.Label}; double-click it to edit the diagram.");
+            }
+        }, "Diagram");
     }
 
     /// <summary>Marks a figure or table as a placeholder (placeholder="note"), or as the real one.</summary>

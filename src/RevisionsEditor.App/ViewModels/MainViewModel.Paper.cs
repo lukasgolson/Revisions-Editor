@@ -104,6 +104,21 @@ public sealed partial class MainViewModel
 
     // ---- Files that belong to the paper ------------------------------------------------------------------
 
+    /// <summary>
+    /// Saves a diagram's source and the SVG drawn from it (to its .diagram file, or a new figures/&lt;label&gt;.diagram).
+    /// Returns both paths in the workspace.
+    /// </summary>
+    public (string DiagramPath, string SvgPath) SaveDiagram(string? diagramPath, string? label, string source)
+    {
+        RequireWorkspace();
+        var (path, svg, changed) = Core.Diagrams.DiagramFiles.Save(WorkspacePath, diagramPath, label, source);
+        if (changed)
+        {
+            MarkProjectFilesChanged();
+        }
+        return (path, svg);
+    }
+
     /// <summary>Copies a file into a folder of the workspace (unless it is already there) and returns its relative path.</summary>
     public string CopyIntoWorkspace(string sourcePath, string folder)
     {
