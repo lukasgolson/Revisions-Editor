@@ -12,6 +12,9 @@ namespace RevisionsEditor.App;
 public partial class MainWindow
 {
     private LineNumberMargin? _lineNumbers;
+    internal LineNumberMargin? LineNumbers => _lineNumbers;
+    private EditorSpellChecker? _spellChecker;
+    internal EditorSpellChecker? SpellChecker => _spellChecker;
 
     private void InitializeTools()
     {
@@ -19,6 +22,15 @@ public partial class MainWindow
         ((Grid)ManuscriptEditor.Parent).Children.Add(_lineNumbers);
         _lineNumbers.Updated += UpdateEditorPosition;
         LineNumbersMenuItem.IsChecked = _settings.ShowLineNumbers;
+
+        // Spelling is checked in the background (WPF's own checking ran on the UI thread and stalled typing);
+        // WPF's is kept only where Windows' spell checker is not available.
+        ManuscriptEditor.Loaded += (_, _) =>
+        {
+            if (_spellChecker != null) return;
+            _spellChecker = EditorSpellChecker.TryAttach(ManuscriptEditor);
+            SpellCheck.SetIsEnabled(ManuscriptEditor, _spellChecker == null);
+        };
 
         Func<object?, bool> workspace = _ => ViewModel.HasWorkspace;
         Bind(AppCommands.ToggleLineNumbers, _ => ToggleLineNumbers(), allowWhileBusy: true);

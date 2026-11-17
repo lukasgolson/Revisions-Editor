@@ -416,7 +416,6 @@
                                                      AcceptsTab="False"
                                                      IsDocumentEnabled="True"
                                                      IsReadOnly="{Binding IsBusy}"
-                                                     SpellCheck.IsEnabled="True"
                                                      VerticalScrollBarVisibility="Auto"
                                                      TextChanged="OnEditorTextChanged"
                                                      SelectionChanged="OnEditorSelectionChanged"

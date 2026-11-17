@@ -508,7 +508,12 @@ public partial class MainWindow
             scholarly: Paper.Context, workspacePath: ViewModel.WorkspacePath, preview: true,
             onFrontMatterActivated: () => Dispatcher.BeginInvoke(OpenTitlePageForm));
         var margins = document.PagePadding;
-        // A new document scrolls the viewer to the top; keep the reader where they were.
+        // Only the blocks that changed are replaced; otherwise (a new document) keep the reader where they were.
+        PageReconciler.WorkspacePath = ViewModel.WorkspacePath;
+        if (PreviewViewer.Document is { Blocks.Count: > 0 } live && live != document && PageReconciler.TryUpdate(live, document, out _))
+        {
+            return;
+        }
         var scroller = Descendant<ScrollViewer>(PreviewViewer);
         double? offset = scroller?.VerticalOffset;
         PreviewViewer.Document = document;

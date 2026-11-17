@@ -75,16 +75,81 @@ public sealed partial class RevisionsEditorTests
             editor.CaretPosition = paragraph.ContentEnd;
 
             Time("Keystroke (text changed, before the edit is applied)", () => editor.CaretPosition.InsertTextInRun("x"), repeat: 20);
+            bool wpfSpelling = SpellCheck.GetIsEnabled(editor);
+            results.Add(($"(spelling: {(window.SpellChecker != null ? "background checker" : "WPF built-in")})", 0));
             SpellCheck.SetIsEnabled(editor, false);
             Time("Keystroke with spell checking off", () => editor.CaretPosition.InsertTextInRun("x"), repeat: 20);
-            SpellCheck.SetIsEnabled(editor, true);
+            SpellCheck.SetIsEnabled(editor, wpfSpelling);
             var images = editor.Document.Blocks.OfType<BlockUIContainer>().ToList();
             foreach (var b in images) b.Child.Visibility = Visibility.Collapsed;
             Time("Keystroke with figures hidden", () => editor.CaretPosition.InsertTextInRun("x"), repeat: 20);
+            SpellCheck.SetIsEnabled(editor, false);
+            Time("Keystroke with spell checking off and figures hidden", () => editor.CaretPosition.InsertTextInRun("x"), repeat: 20);
+            SpellCheck.SetIsEnabled(editor, wpfSpelling);
             foreach (var b in images) b.Child.Visibility = Visibility.Visible;
+            foreach (var b in images) b.Child.CacheMode = new System.Windows.Media.BitmapCache();
+            Time("Keystroke with figures cached as bitmaps", () => editor.CaretPosition.InsertTextInRun("x"), repeat: 20);
+            foreach (var b in images) b.Child.CacheMode = null;
+            var text = new System.Windows.Documents.TextRange(editor.Document.ContentStart, editor.Document.ContentEnd).Text;
+            results.Add(($"(page text: {text.Length} characters, {editor.Document.Blocks.Count} blocks, {images.Count} figures/tables/equations)", 0));
             var handlerTimer = Stopwatch.StartNew();
             for (int i = 0; i < 20; i++) editor.CaretPosition.InsertTextInRun("x");
             results.Add(("Keystroke, handlers only (no layout or render)", handlerTimer.Elapsed.TotalMilliseconds / 20));
+            // Real typing: bursts of keystrokes 30 ms apart with pauses (when edits are applied and checks run).
+            // How late each keystroke is handled is the lag a writer feels.
+            {
+                var lateness = new List<double>();
+                var clock = Stopwatch.StartNew();
+                int typed = 0;
+                double due = 0;
+                var frame = new DispatcherFrame();
+                var timer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(1) };
+                timer.Tick += (_, _) =>
+                {
+                    double now = clock.Elapsed.TotalMilliseconds;
+                    if (now < due) return;
+                    lateness.Add(now - due);
+                    editor.CaretPosition.InsertTextInRun("e");
+                    typed++;
+                    // Ten keystrokes, then a 700 ms pause, five times.
+                    due = now + (typed % 10 == 0 ? 700 : 30);
+                    if (typed >= 50) { timer.Stop(); frame.Continue = false; }
+                };
+                // What holds the UI thread up: every dispatcher operation over 20 ms, by the method it runs.
+                var started = new Dictionary<DispatcherOperation, long>();
+                var slow = new List<(double Ms, string What)>();
+                var methodField = typeof(DispatcherOperation).GetField("_method", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                DispatcherHookEventHandler onStart = (_, e) => started[e.Operation] = Stopwatch.GetTimestamp();
+                DispatcherHookEventHandler onEnd = (_, e) =>
+                {
+                    if (!started.Remove(e.Operation, out long t0)) return;
+                    double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                    if (ms > 20)
+                    {
+                        var method = methodField?.GetValue(e.Operation) as Delegate;
+                        string what = $"{method?.Method.DeclaringType?.Name}.{method?.Method.Name}";
+                        // A timer's tick: name the handler it runs.
+                        if (typeof(DispatcherOperation).GetField("_args", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(e.Operation) is DispatcherTimer t
+                            && typeof(DispatcherTimer).GetField("Tick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.GetValue(t) is Delegate tick)
+                        {
+                            what = "timer " + string.Join(", ", tick.GetInvocationList().Select(d => $"{d.Method.DeclaringType?.Name}.{d.Method.Name}"));
+                        }
+                        slow.Add((ms, $"{e.Operation.Priority} {what}"));
+                    }
+                };
+                Dispatcher.CurrentDispatcher.Hooks.OperationStarted += onStart;
+                Dispatcher.CurrentDispatcher.Hooks.OperationCompleted += onEnd;
+                timer.Start();
+                Dispatcher.PushFrame(frame);
+                Dispatcher.CurrentDispatcher.Hooks.OperationStarted -= onStart;
+                Dispatcher.CurrentDispatcher.Hooks.OperationCompleted -= onEnd;
+                foreach (var group in slow.GroupBy(x => x.What).OrderByDescending(g => g.Max(x => x.Ms)).Take(8))
+                {
+                    results.Add(($"   slow UI work: {group.Key} ×{group.Count()} (max)", group.Max(x => x.Ms)));
+                }
+                lateness.Sort();
+                results.Add(($"Typing session: median lateness of a keystroke (max {lateness[^1]:0} ms, 95th percentile {lateness[(int)(lateness.Count * 0.95)]:0} ms)", lateness[lateness.Count / 2]));
+            }
             Time("Caret move (selection changed)", () => editor.CaretPosition = paragraph.ContentStart.GetPositionAtOffset(3) ?? paragraph.ContentStart, repeat: 20);
             Time("Apply typed edits to the manuscript (after the typing pause)", () =>
             {

@@ -11,6 +11,12 @@ namespace RevisionsEditor.App.Rendering;
 /// Line numbers in the left margin of the manuscript page, counted continuously over the text as it is laid
 /// out on screen, as Word's line numbering does. Lines in tables are not numbered. The numbers follow the
 /// editor's own layout, so they differ from those of an exported Word document.
+/// <para>
+/// Counting lines makes WPF measure the text, so each block's line count is kept and counted again only when
+/// the block changes or the page width does; only the blocks on screen and the one with the cursor are walked
+/// line by line. (Walking every line of a long manuscript after each keystroke held typing up by a quarter of a
+/// second.)
+/// </para>
 /// </summary>
 internal sealed class LineNumberMargin : FrameworkElement
 {
@@ -25,6 +31,9 @@ internal sealed class LineNumberMargin : FrameworkElement
     private readonly List<(int Number, double Top, double Height)> _visible = [];
     private readonly List<(int Number, TextPointer? Pointer, FrameworkElement? Element)> _lineStarts = [];
     private bool _enabled;
+    private readonly Dictionary<Block, int> _lineCounts = [];
+    private FlowDocument? _countedDocument;
+    private double _countedWidth;
 
     public LineNumberMargin(RichTextBox editor)
     {
@@ -37,7 +46,14 @@ internal sealed class LineNumberMargin : FrameworkElement
             Recompute();
         };
         editor.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => Schedule()));
-        editor.TextChanged += (_, _) => Schedule();
+        editor.TextChanged += (_, e) =>
+        {
+            foreach (var change in e.Changes)
+            {
+                ForgetBlockAt(change.Offset);
+            }
+            Schedule();
+        };
         editor.SelectionChanged += (_, _) => Schedule();
         editor.SizeChanged += (_, _) => Schedule();
     }
@@ -69,7 +85,7 @@ internal sealed class LineNumberMargin : FrameworkElement
     /// <summary>Puts the cursor at the start of a line and scrolls it into view. False if there is no such line.</summary>
     public bool GoToLine(int number)
     {
-        Recompute();
+        Recompute(everyLine: true);
         var line = _lineStarts.FirstOrDefault(l => l.Number == number);
         if (line.Number == 0)
         {
@@ -93,7 +109,28 @@ internal sealed class LineNumberMargin : FrameworkElement
         return true;
     }
 
-    private void Recompute()
+    /// <summary>The block a change at this offset touched: its line count must be counted again.</summary>
+    private void ForgetBlockAt(int offset)
+    {
+        if (_lineCounts.Count == 0) return;
+        DependencyObject? element = _editor.Document.ContentStart.GetPositionAtOffset(offset)?.Parent;
+        while (element is TextElement { Parent: TextElement parent } && element is not Block { Parent: FlowDocument })
+        {
+            element = parent;
+        }
+        if (element is Block block)
+        {
+            _lineCounts.Remove(block);
+            if (block.PreviousBlock != null) _lineCounts.Remove(block.PreviousBlock); // a merge or a split
+        }
+    }
+
+    private void Recompute() => Recompute(everyLine: false);
+
+    /// <summary>Counts now (for tests): with <paramref name="everyLine"/>, every block is counted again.</summary>
+    internal void RecomputeNow(bool everyLine) => Recompute(everyLine);
+
+    private void Recompute(bool everyLine)
     {
         _visible.Clear();
         _lineStarts.Clear();
@@ -101,9 +138,25 @@ internal sealed class LineNumberMargin : FrameworkElement
         int caretLine = 0;
         var caret = _editor.CaretPosition;
         double height = ActualHeight;
+        if (!ReferenceEquals(_countedDocument, _editor.Document) || Math.Abs(_countedWidth - _editor.ActualWidth) > 0.5)
+        {
+            // Another page, or another width: every line breaks anew.
+            _lineCounts.Clear();
+            _countedDocument = _editor.Document;
+            _countedWidth = _editor.ActualWidth;
+        }
+        var present = new HashSet<Block>();
 
         foreach (var block in _editor.Document.Blocks)
         {
+            present.Add(block);
+            bool hasCaret = caret.CompareTo(block.ContentStart) >= 0 && caret.CompareTo(block.ContentEnd) <= 0;
+            if (!everyLine && !hasCaret && !(_enabled && OnScreen(block, height)) && _lineCounts.TryGetValue(block, out int known))
+            {
+                number += known;
+                continue;
+            }
+            int before = number;
             switch (block)
             {
                 case Paragraph paragraph:
@@ -165,12 +218,37 @@ internal sealed class LineNumberMargin : FrameworkElement
                     }
                     break;
             }
+            _lineCounts[block] = number - before;
+        }
+        foreach (var gone in _lineCounts.Keys.Where(b => !present.Contains(b)).ToList())
+        {
+            _lineCounts.Remove(gone);
         }
 
         CaretLine = caretLine;
         LineCount = number;
         InvalidateVisual();
         Updated?.Invoke();
+    }
+
+    /// <summary>Whether any of the block is on screen (its lines are then drawn with their numbers).</summary>
+    private bool OnScreen(Block block, double height)
+    {
+        try
+        {
+            if (block is BlockUIContainer { Child: FrameworkElement child })
+            {
+                var top = child.TranslatePoint(new Point(0, 0), this);
+                return top.Y + child.ActualHeight >= 0 && top.Y <= height;
+            }
+            var start = block.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+            var end = block.ContentEnd.GetCharacterRect(LogicalDirection.Backward);
+            return start.IsEmpty || end.IsEmpty || (end.Bottom >= 0 && start.Top <= height);
+        }
+        catch (InvalidOperationException)
+        {
+            return true; // not laid out yet: walk it
+        }
     }
 
     /// <summary>Text blocks of a figure, table, equation or read-only paragraph whose lines count (not table cells).</summary>
