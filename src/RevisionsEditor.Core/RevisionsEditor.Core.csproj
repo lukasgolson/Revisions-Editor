@@ -11,5 +11,8 @@
          rendered with PDFium for the preview and Word. -->
     <PackageReference Include="Svg.Skia" Version="5.2.3" />
     <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <!-- Git inside the app (libgit2): launching git.exe costs from a quarter to a full second per command on
+         managed Windows machines. The git program is still used to fetch from and push to GitHub. -->
+    <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
   </ItemGroup>
 </Project>
