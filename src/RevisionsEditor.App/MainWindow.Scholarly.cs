@@ -5,6 +5,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using RevisionsEditor.App.Dialogs;
 using RevisionsEditor.App.Rendering;
@@ -506,8 +508,26 @@ public partial class MainWindow
             scholarly: Paper.Context, workspacePath: ViewModel.WorkspacePath, preview: true,
             onFrontMatterActivated: () => Dispatcher.BeginInvoke(OpenTitlePageForm));
         var margins = document.PagePadding;
+        // A new document scrolls the viewer to the top; keep the reader where they were.
+        var scroller = Descendant<ScrollViewer>(PreviewViewer);
+        double? offset = scroller?.VerticalOffset;
         PreviewViewer.Document = document;
         document.PagePadding = margins;
+        if (offset is > 0)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => Descendant<ScrollViewer>(PreviewViewer)?.ScrollToVerticalOffset(offset.Value));
+        }
+    }
+
+    private static T? Descendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T found) return found;
+            if (Descendant<T>(child) is { } deeper) return deeper;
+        }
+        return null;
     }
 
     // ---- Checks ---------------------------------------------------------------------------------

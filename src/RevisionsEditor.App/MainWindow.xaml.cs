@@ -325,6 +325,9 @@ public partial class MainWindow : Window
     {
         _manuscriptDirty = false;
         var caret = preserveCaret ? CaptureCaret() : null;
+        // Assigning a new document scrolls the editor to the top; inserting a figure or fixing an issue should
+        // leave the page where it was.
+        double scrollOffset = ManuscriptEditor.VerticalOffset;
 
         _renderingEditor = true;
         try
@@ -369,6 +372,11 @@ public partial class MainWindow : Window
         if (caret is { } position)
         {
             RestoreCaret(position);
+        }
+        if (scrollOffset > 0)
+        {
+            // After the new page is laid out (and after the caret, which would scroll to itself).
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => ManuscriptEditor.ScrollToVerticalOffset(scrollOffset));
         }
         UpdateEditorHint();
         UpdateEditorToolbar();
